@@ -3383,15 +3383,20 @@ window.avviaMda = function () {
     }
     h += '</main><div id="toast" class="toast"></div>';
     // il ridisegno conserva le sezioni aperte (riconosciute dal titolo e dall'ordine) e il punto della pagina
-    var aperte = {}, y = window.scrollY;
+    var aperte = {}, y = window.scrollY, lati = scorrevoli().map(function (e) { return e.scrollLeft; });
     sezioni().forEach(function (d) { if (d.open) aperte[d.dataset.id] = 1; });
     app.innerHTML = h;
     sezioni().forEach(function (d) { if (aperte[d.dataset.id]) d.open = true; });
+    scorrevoli().forEach(function (e, i) { if (lati[i]) e.scrollLeft = lati[i]; });
     window.scrollTo(0, y);
     var ci = document.getElementById('cerca');
     if (ci) ci.addEventListener('input', function () { cerca = ci.value.trim(); var p = ci.selectionStart; render(); var n = document.getElementById('cerca'); n.focus(); try { n.setSelectionRange(p, p); } catch (e) { /* */ } });
   }
 
+  /** Barre e tabelle che scorrono di lato: dopo il ridisegno tornano dove l'operatore le aveva lasciate. */
+  function scorrevoli() {
+    return Array.prototype.filter.call(app.querySelectorAll('div, table, nav'), function (e) { var o = getComputedStyle(e).overflowX; return o === 'auto' || o === 'scroll'; });
+  }
   function sezioni() {
     var visti = {};
     return Array.prototype.map.call(app.querySelectorAll('details'), function (d) {
@@ -3434,7 +3439,7 @@ window.avviaMda = function () {
       '<label class="et">Itinerario<select id="sel-giro">' + giri.map(function (x) { return '<option value="' + esc(x.key) + '"' + (x.key === g.key ? ' selected' : '') + '>' + esc(x.codice + ' · ' + x.nome + ' · ' + x.classe) + '</option>'; }).join('') + '</select></label></div>' +
       '<div class="azioni"><button class="az forte" id="pos">' + ic('mirino') + (osserva != null ? 'Posizione attiva · giro più vicino' : 'Usa la mia posizione · trova il giro più vicino') + '</button>' +
       '<button class="az" id="programma">' + (m.programma[data] === g.key ? 'Programmato per questo giorno' : 'Programma questo giro') + '</button></div>' +
-      (posMsg ? '<p class="sub mda-pos">' + esc(posMsg) + '</p>' : '') + consigliati(m, c, giri) +
+      (posMsg ? '<p class="sub mda-pos mda-gps">' + esc(posMsg) + '</p>' : '') + consigliati(m, c, giri) +
       (m.programma[data] && m.programma[data] !== g.key ? '<p class="sub">Per questo giorno era programmato ' + esc((giri.filter(function (x) { return x.key === m.programma[data]; })[0] || {}).codice || 'un altro giro') + '.</p>' : '') + '</section>';
     // riquadro del giro
     var p = c.pesi;
@@ -3740,21 +3745,20 @@ window.avviaMda = function () {
     if (!navigator.geolocation) { posMsg = 'Questo browser non dà la posizione.'; render(); return; }
     if (osserva != null) { navigator.geolocation.clearWatch(osserva); osserva = null; pos = null; posMsg = 'Posizione spenta.'; render(); return; }
     posMsg = 'Attendo la posizione… (consenti l\'accesso alla posizione se il telefono lo chiede)'; render();
-    var prima = true, ultima = null;
+    var prima = true;
     osserva = navigator.geolocation.watchPosition(function (p) {
-      var nuova = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() };
-      if (!prima && ultima && R.distanzaMetri(ultima, nuova) < 50 && nuova.t - ultima.t < 60000) return;
-      var campo = document.activeElement;
-      if (!prima && campo && /^(INPUT|TEXTAREA|SELECT)$/.test(campo.tagName)) return;   // non disturbare chi sta scrivendo
-      pos = ultima = nuova;
+      pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
       var m = M(), c = calcola(m), giri = c.giri.filter(function (g) { return g.residuo; });
       var aperteSedi = function (g) { return g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); }); };
       var r = R.giriConsigliati(giri.map(function (g) { return Object.assign({}, g, { sedi: aperteSedi(g), originale: g }); }), c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos);
       var best = r[0];
       if (best && prima) { giroSel = best.giro.key; }
       posMsg = 'Posizione attiva (±' + Math.round(pos.acc) + ' m) · ' + (best ? 'giro più utile adesso: ' + best.giro.codice + ' · ' + best.aperte.length + (best.aperte.length === 1 ? ' aperta ora' : ' aperte ora') + (best.vicina ? ', la più vicina a ' + (best.vicina.metri < 1000 ? Math.round(best.vicina.metri) + ' m' : (best.vicina.metri / 1000).toFixed(1) + ' km') : '') : 'nessun locale lavorabile adesso con posizione nota: usa «Segna ingresso con GPS» o la ricerca posizioni');
+      // solo la prima posizione ridisegna (sceglie il giro); poi si aggiorna la riga della posizione, senza toccare il resto:
+      // ridisegnare a ogni segnale GPS chiudeva le sezioni aperte e riportava indietro le barre mentre l'operatore le usava
+      var riga = document.querySelector('.mda-gps');
+      if (prima) { if (!document.querySelector('.ovl')) render(); } else if (riga) riga.textContent = posMsg;
       prima = false;
-      if (!document.querySelector('.ovl')) render();
     }, function (err) {
       osserva = null; pos = null;
       posMsg = err.code === 1 ? 'Posizione negata: consentila nelle impostazioni del browser e riprova. La scelta del giro resta manuale.' : 'Posizione non disponibile (' + err.message + '). Riprova all\'aperto.';
