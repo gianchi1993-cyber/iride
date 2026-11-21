@@ -415,6 +415,8 @@ button.mda-trovata{width:100%;text-align:left;font:inherit;color:inherit;cursor:
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 
 .mda-trovata{display:grid;gap:6px;padding:12px}.mda-trovata .mda-nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+
+.mda-voci.mda-mio{max-height:none;overflow:visible}.mda-passo{margin:10px 0 2px;font-weight:700;font-size:14px;color:var(--chiaro)}.mda-passo small{font-weight:400;color:var(--spento)}.mda-mio .spunta span{line-height:1.3}.mda-mio-azioni{position:sticky;bottom:0;display:flex;flex-wrap:wrap;gap:8px;padding:10px 0 4px;background:var(--pannello-pieno,var(--notte2))}
 </style>
 <style id="css-argo" media="not all">
 /* ARGO – sala operativa notturna (demo).
@@ -1512,7 +1514,7 @@ svg.mappa{width:100%;height:auto;display:block}
    * -> { perSede: { sedeKey: { fascia, chiusura, statoGoogle, noteGoogle, lat, lon } }, righe, abbinate, campi }
    */
   // titoli in più accettati nei documenti di supporto (file di altre app, elenchi fatti a mano)
-  var SINONIMI_SUPPORTO = [['locale', /^(nome|locale|esercizio|attivit|ragione sociale|nome attivit)/], ['comune', /citt|paese|^comune/], ['indirizzo', /^via|indirizz/]];
+  var SINONIMI_SUPPORTO = [['organizzatore', /ragione sociale/], ['locale', /^(nome|locale|esercizio|attivit|denominazione|insegna)/], ['comune', /citt|paese|^comune/], ['indirizzo', /^via|indirizz/]];
   // riconoscimento dal contenuto, per le colonne senza un titolo riconosciuto (o senza titolo)
   var CONTENUTI_SUPPORTO = [
     ['piva', function (v) { return /^(it)?\d{11}$/i.test(v.replace(/\s/g, '')); }],
@@ -1576,6 +1578,8 @@ svg.mappa{width:100%;height:auto;display:block}
       if (cifre(s.piva).length === 11) aggiungi('i', cifre(s.piva), k);
       if (normalizza(s.locale)) { aggiungi('nc', normalizza(s.locale) + '|' + normalizza(s.comune), k); aggiungi('nv', normalizza(s.locale) + '|' + viaDi(s.indirizzo), k); }
     });
+    var perSedeIds = {}; schedeMaster.forEach(function (s) { (perSedeIds[sedeDi(s)] = perSedeIds[sedeDi(s)] || []).push(s.id); });
+    var perScheda = {};
     var unica = function (tipo, chiave) { var o = chiave && indice[tipo + '#' + chiave]; var ks = o ? Object.keys(o) : []; return ks.length === 1 ? ks[0] : ks.length > 1 ? 'piu' : null; };
     var perSede = {}, campi = {}, abbinate = 0, scartate = 0, lette = 0, perMetodo = { protocollo: 0, piva: 0, nomeComune: 0, nomeVia: 0 };
     righe.forEach(function (riga) {
@@ -1591,12 +1595,37 @@ svg.mappa{width:100%;height:auto;display:block}
       if (!trovata) { scartate++; return; }
       var k = trovata[1], d = perSede[k] || (perSede[k] = {});
       perMetodo[trovata[0]]++; abbinate++;
+      var ids = trovata[0] === 'protocollo' ? schedeMaster.filter(function (s) { return String(s.protocollo || '').trim() === val(riga, 'protocollo'); }).map(function (s) { return s.id; }) : perSedeIds[k];
+      var laS = parseFloat(val(riga, 'lat').replace(',', '.')), loS = parseFloat(val(riga, 'lon').replace(',', '.'));
+      ids.forEach(function (id) { perScheda[id] = { comune: val(riga, 'comune'), indirizzo: val(riga, 'indirizzo'), lat: isNaN(laS) ? null : laS, lon: isNaN(loS) ? null : loS }; });
       ['fascia', 'chiusura', 'statoGoogle', 'noteGoogle'].forEach(function (c) { var v = val(riga, c); if (!vuoto(v) && !d[c]) { d[c] = v; campi[c] = 1; } });
       var la = parseFloat(val(riga, 'lat').replace(',', '.')), lo = parseFloat(val(riga, 'lon').replace(',', '.'));
       if (!isNaN(la) && !isNaN(lo) && d.lat == null && Math.abs(la) <= 90 && Math.abs(lo) <= 180) { d.lat = la; d.lon = lo; campi.posizione = 1; }
     });
     Object.keys(perSede).forEach(function (k) { if (!Object.keys(perSede[k]).length) delete perSede[k]; });
-    return { ok: true, perSede: perSede, righe: lette, abbinate: abbinate, scartate: scartate, perMetodo: perMetodo, sediConDati: Object.keys(perSede).length, campi: Object.keys(campi), colonne: colonne };
+    return { ok: true, perSede: perSede, perScheda: perScheda, righe: lette, abbinate: abbinate, scartate: scartate, perMetodo: perMetodo, sediConDati: Object.keys(perSede).length, campi: Object.keys(campi), colonne: colonne };
+  }
+
+  /**
+   * Lista ufficiale delle schede da accertare (decisione del proponente, 21/11/2026): per le schede abbinate, comune e
+   * indirizzo della lista prevalgono su quelli del master (quelli del master restano in s.origine); s.inLista = true.
+   * La posizione della lista si usa solo dove la sede non ne ha già una (scelta 15.2): lo decide chi chiama, con .posizioni.
+   * perScheda: { idScheda: { comune, indirizzo, lat, lon } } -> { cambiate, posizioni: [{ key, lat, lon }] }
+   */
+  function applicaLista(schede, perScheda) {
+    var cambiate = 0, posizioni = [];
+    schede.forEach(function (s) {
+      var l = perScheda[s.id];
+      if (!l) { s.inLista = false; return; }
+      s.inLista = true;
+      var comune = l.comune || s.comune, indirizzo = l.indirizzo || s.indirizzo;
+      if (normalizza(comune) !== normalizza(s.comune) || normalizza(indirizzo) !== normalizza(s.indirizzo)) {
+        if (!s.origine) s.origine = { comune: s.comune, indirizzo: s.indirizzo };
+        s.comune = comune; s.indirizzo = indirizzo; cambiate++;
+      }
+      if (l.lat != null && l.lon != null) posizioni.push({ key: sedeDi(s), lat: l.lat, lon: l.lon });
+    });
+    return { cambiate: cambiate, posizioni: posizioni };
   }
 
   /**
@@ -1973,7 +2002,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -3468,6 +3497,8 @@ window.avviaMda = function () {
     var nellInsieme = tutteLeSchede(m).filter(function (s) { return nelInsieme(m, s); });
     // decisione del proponente (21/11/2026): negli itinerari solo locali con il comune; quelli senza si cercano e si completano a mano
     var ammesse = nellInsieme.filter(function (s) { return !esc[tipologiaDi(s)] && s.comune; });
+    // con la lista ufficiale caricata, tra le «da accertare» solo le sue schede (e i locali aggiunti a mano)
+    if (m.lista && insieme(m) === 'da') ammesse = ammesse.filter(function (s) { return s.inLista || m.manuali.indexOf(s) >= 0; });
     var aperte = ammesse.filter(function (s) { return !esitoDi(m, s.id); });
     // itinerari da almeno 6 tappe, per zone collegate (regole.js, costruisciGiri); i locali aggiunti a mano entrano nella zona più vicina
     var giri = R.costruisciGiri(ammesse, { minimoTappe: 6, massimoTappe: 12, puntoDi: puntoDi(m) });
@@ -3490,8 +3521,7 @@ window.avviaMda = function () {
     // «il mio giro»: giri a parte con i comuni e i generi scelti dall'operatore; i giri normali non cambiano
     var mg = m.mioGiro, mioGiri = [];
     if (mg && (mg.comuni.length || mg.generi.length)) {
-      var scelte = nellInsieme.filter(function (s) { return R.inItinerario(s, null) || insieme(m) !== 'da'; }).filter(function (s) {
-        return (!mg.comuni.length || mg.comuni.indexOf(s.comune || 'Comune non indicato') >= 0) && (!mg.generi.length || mg.generi.indexOf(tipologiaDi(s)) >= 0); });
+      var scelte = candidatiMio(m, nellInsieme, mg).filter(function (s) { return !(mg.esclusi || {})[R.sedeDi(s)]; });
       mioGiri = R.costruisciGiri(scelte, { minimoTappe: 6, massimoTappe: 12, puntoDi: puntoDi(m) });
       mioGiri.forEach(function (g, i) { ordina(g); g.key = 'MG:' + g.key; g.mio = true; g.codice = 'MG' + String(i + 1).padStart(2, '0'); });
     }
@@ -3598,17 +3628,41 @@ window.avviaMda = function () {
   // ---- Itinerari: «Giornata sul campo»
   var mioAperto = false;
   /** «Il mio giro»: l'operatore sceglie comuni e generi di locale; IRIDE costruisce giri a parte (MG), i giri normali restano. */
+  /** Schede che rispondono ai comuni e ai generi scelti per «il mio giro» (con il comune; nell'insieme attivo). */
+  function candidatiMio(m, nellInsieme, scelta) {
+    return nellInsieme.filter(function (s) {
+      return s.comune && (!scelta.comuni.length || scelta.comuni.indexOf(s.comune) >= 0) && (!scelta.generi.length || scelta.generi.indexOf(tipologiaDi(s)) >= 0) &&
+        (!m.lista || insieme(m) !== 'da' || s.inLista || m.manuali.indexOf(s) >= 0);
+    });
+  }
+  /**
+   * «Il mio giro» in tre passi: comuni, poi generi di locale (solo quelli presenti nei comuni scelti), poi i singoli locali
+   * (tutti spuntati; l'operatore toglie quelli che non vuole). Il pulsante «Crea» resta sempre in vista in fondo al riquadro.
+   */
   function sezioneMioGiro(m, c) {
-    var mg = m.mioGiro || { comuni: [], generi: [] }, b = m.mioBozza || (m.mioBozza = { comuni: mg.comuni.slice(), generi: mg.generi.slice() });
-    var com = {}, gen = {};
-    c.nellInsieme.forEach(function (s) { if (esitoDi(m, s.id)) return; var k = s.comune || 'Comune non indicato'; com[k] = (com[k] || 0) + 1; gen[tipologiaDi(s)] = (gen[tipologiaDi(s)] || 0) + 1; });
+    var mg = m.mioGiro || { comuni: [], generi: [], esclusi: {} };
+    var b = m.mioBozza || (m.mioBozza = { comuni: mg.comuni.slice(), generi: mg.generi.slice(), esclusi: Object.assign({}, mg.esclusi || {}) });
+    b.esclusi = b.esclusi || {};
+    var aperte = c.nellInsieme.filter(function (s) { return !esitoDi(m, s.id) && s.comune; });
+    var com = {}; aperte.forEach(function (s) { com[s.comune] = (com[s.comune] || 0) + 1; });
+    var gen = {}; aperte.filter(function (s) { return !b.comuni.length || b.comuni.indexOf(s.comune) >= 0; }).forEach(function (s) { gen[tipologiaDi(s)] = (gen[tipologiaDi(s)] || 0) + 1; });
+    b.generi = b.generi.filter(function (g) { return gen[g]; });
+    var sedi = {}, elenco = [];
+    if (b.comuni.length || b.generi.length) candidatiMio(m, aperte, b).forEach(function (s) {
+      var k = R.sedeDi(s); if (!sedi[k]) { sedi[k] = { key: k, nome: s.locale, comune: s.comune, tipologia: tipologiaDi(s), indirizzo: s.indirizzo }; elenco.push(sedi[k]); }
+    });
+    elenco.sort(function (a, z) { return a.comune.localeCompare(z.comune, 'it') || a.nome.localeCompare(z.nome, 'it'); });
+    var scelti = elenco.filter(function (x) { return !b.esclusi[x.key]; }).length;
     var attivo = mg.comuni.length || mg.generi.length, n = c.giri.filter(function (g) { return g.mio && g.residuo; }).length;
     var voci = function (o, sel, attr) { return Object.keys(o).sort(function (a, z) { return a.localeCompare(z, 'it'); }).map(function (k) { return '<label class="spunta"><input type="checkbox" ' + attr + '="' + esc(k) + '"' + (sel.indexOf(k) >= 0 ? ' checked' : '') + '> ' + esc(k) + ' <small>(' + o[k] + ')</small></label>'; }).join(''); };
     return '<div class="mda-tendina' + (mioAperto ? ' aperta' : '') + '"><button id="tendina-mio" aria-expanded="' + mioAperto + '"><span class="et">Il mio giro</span><b>' +
-      (attivo ? n + (n === 1 ? ' giro' : ' giri') + ' · ' + esc(mg.comuni.concat(mg.generi).join(', ')) : 'Scegli comuni e generi di locale') + '</b></button>' +
-      (mioAperto ? '<div class="mda-voci"><p class="sub"><b>Comuni</b> (nessuno = tutti)</p>' + voci(com, b.comuni, 'data-mio-comune') +
-        '<p class="sub"><b>Generi di locale</b> (nessuno = tutti)</p>' + voci(gen, b.generi, 'data-mio-genere') +
-        '<div class="mda-nav"><button class="az forte" id="crea-mio"' + (b.comuni.length || b.generi.length ? '' : ' disabled') + '>Crea il mio giro</button>' + (attivo ? '<button class="az" id="togli-mio">Elimina il mio giro</button>' : '') + '</div></div>' : '') + '</div>';
+      (attivo ? n + (n === 1 ? ' giro MG' : ' giri MG') + ' · ' + esc(mg.comuni.concat(mg.generi).join(', ')) : 'Scegli comune, genere e locali') + '</b></button>' +
+      (mioAperto ? '<div class="mda-voci mda-mio"><p class="mda-passo">1 · Comuni <small>(nessuno = tutti)</small></p>' + voci(com, b.comuni, 'data-mio-comune') +
+        '<p class="mda-passo">2 · Generi di locale <small>(' + (b.comuni.length ? 'nei comuni scelti; ' : '') + 'nessuno = tutti)</small></p>' + voci(gen, b.generi, 'data-mio-genere') +
+        '<p class="mda-passo">3 · Locali <small>' + (elenco.length ? '(togli quelli che non vuoi)' : '(scegli prima un comune o un genere)') + '</small></p>' +
+        elenco.map(function (x) { return '<label class="spunta"><input type="checkbox" data-mio-locale="' + esc(x.key) + '"' + (b.esclusi[x.key] ? '' : ' checked') + '> <span><b>' + esc(x.nome) + '</b><br><small>' + esc(x.comune + ' · ' + x.tipologia + ' · ' + x.indirizzo) + '</small></span></label>'; }).join('') +
+        '<div class="mda-mio-azioni"><button class="az forte" id="crea-mio"' + (scelti ? '' : ' disabled') + '>' + (scelti ? 'Crea il mio giro · ' + scelti + (scelti === 1 ? ' locale' : ' locali') : 'Scegli almeno un comune o un genere') + '</button>' +
+        (attivo ? '<button class="az" id="togli-mio">Elimina il mio giro</button>' : '') + '</div></div>' : '') + '</div>';
   }
   function filtriItinerario(m, c) {
     var conta = {}; INSIEMI.forEach(function (x) { conta[x[0]] = 0; });
@@ -3739,6 +3793,7 @@ window.avviaMda = function () {
     var h = '<article class="foglio mda-tappa' + (chiusaOggi(m, x) ? ' chiusa' : '') + '" data-sede="' + esc(x.key) + '"><div class="mda-n"><span>Tappa</span><b>' + (n >= 0 ? n + 1 : '—') + '</b></div><div class="mda-corpo">' +
       '<div class="et">' + (x.daGiro ? 'da ' + esc(x.daGiro.codice) + ' · ' : '') + esc(x.comune || 'Comune non indicato') + ' · ' + esc(x.tipologia || 'tipologia n.d.') + (dist != null ? ' · ' + (dist < 1000 ? Math.round(dist) + ' m' : (dist / 1000).toFixed(1) + ' km') : '') + '</div>' +
       '<h3 class="mda-nome">' + esc(x.nome) + '</h3><p class="mda-ind">' + esc(x.indirizzo) + '</p>' +
+      (s0.origine ? '<p class="sub">Indirizzo della lista ufficiale · nel master: ' + esc([s0.origine.indirizzo, s0.origine.comune].filter(Boolean).join(', ')) + '</p>' : '') +
       (chiusaOggi(m, x) ? '<p class="mda-verifica">' + ic('avviso') + 'Verifica sul posto: ' + esc(sg.chiusoOggi === data ? 'segnalato chiuso oggi' : s0.statoGoogle && /chius/i.test(s0.statoGoogle) ? 'Google dice «' + s0.statoGoogle + '»' : 'oggi è il giorno di chiusura') + '</p>' : '') +
       '<div class="badges">' + (function () { var s = statoDi(m, x); return '<span class="badge mda-orario-' + s.stato + '">' + esc(testoStato(s)) + '</span>'; })() +
       (insieme(m) !== 'da' ? x.schede.map(function (s) { var st = R.statoScheda(s); return '<span class="badge mda-' + st.colore + '">' + esc(st.etichetta) + '</span>'; }).join('') : '') +
@@ -3759,7 +3814,7 @@ window.avviaMda = function () {
       '<div class="mda-nav"><a class="az" target="_blank" rel="noopener" href="' + esc(naviga) + '">' + ic('naviga') + (p ? 'Naviga alle coordinate' : 'Naviga per indirizzo') + '</a>' +
       '<button class="link" data-ingresso="' + esc(x.key) + '">Segna ingresso con GPS</button>' +
       '<a class="link" target="_blank" rel="noopener" href="' + esc(cercaOrari(x)) + '">Cerca orari sul web</a></div>' +
-      '<p class="sub">' + (m.pin[x.key] ? 'Ingresso segnato con GPS (±' + Math.round(m.pin[x.key].acc || 0) + ' m)' : m.geo[x.key] ? (m.geo[x.key].livello === 'file' ? 'Posizione dal file del master' : 'Posizione da OpenStreetMap · ' + (m.geo[x.key].livello === 'via' ? 'riferimento della sola via' : 'civico')) : 'Indirizzo del master · controlla il punto in Maps') + '</p>' +
+      '<p class="sub">' + (m.pin[x.key] ? 'Ingresso segnato con GPS (±' + Math.round(m.pin[x.key].acc || 0) + ' m)' : m.geo[x.key] ? (m.geo[x.key].livello === 'lista' ? 'Posizione dalla lista ufficiale' : m.geo[x.key].livello === 'file' ? 'Posizione dal file del master' : 'Posizione da OpenStreetMap · ' + (m.geo[x.key].livello === 'via' ? 'riferimento della sola via' : 'civico')) : 'Indirizzo del master · controlla il punto in Maps') + '</p>' +
       '<div class="mda-schede">' + x.schede.map(function (s) {
         var e = esitoDi(m, s.id);
         return '<div class="mda-scheda"><span>' + esc(s.protocollo || s.id) + ' · <b>' + euro(s.importo) + '</b>' + (e ? ' · <i>' + esc(e.esito) + ' ' + esc(e.data) + '</i>' : '') + '</span><button class="az' + (e ? '' : ' forte') + '" data-esito="' + esc(s.id) + '">' + (e ? 'Modifica esito' : 'Registra esito') + '</button></div>';
@@ -3937,8 +3992,24 @@ window.avviaMda = function () {
         });
         (m.documenti = m.documenti || []).push({ file: file.name, caricatoIl: oggi(), sedi: d.sediConDati });
         salva(); render(); toast('Documento di supporto usato: dati per ' + d.sediConDati + ' locali');
+        // quasi tutto abbinato per protocollo: può essere la lista ufficiale delle schede da accertare
+        if (d.righe && d.perMetodo.protocollo / d.righe >= 0.8) setTimeout(function () {
+          DB.chiedi({ titolo: 'È la lista ufficiale delle schede da accertare?', testo: 'Se confermi: negli itinerari «Validate da accertare» entrano solo i ' + d.perMetodo.protocollo +
+            ' locali di questa lista; comune e indirizzo della lista prevalgono su quelli del master; la posizione della lista si usa dove manca. Le altre schede restano nel master e nella ricerca.', conferma: 'Sì, lista ufficiale' }, function () {
+            m.lista = { file: file.name, caricataIl: oggi(), perScheda: d.perScheda };
+            var r = applicaListaSuM(m); giroSel = null; salva(); render();
+            toast('Lista ufficiale attiva: ' + Object.keys(d.perScheda).length + ' schede, ' + r.cambiate + ' con comune o indirizzo aggiornati');
+          });
+        }, 300);
       });
     }).catch(function (err) { toast(err.message || 'File non leggibile'); });
+  }
+
+  /** Applica la lista ufficiale alle schede della mandataria; le posizioni della lista solo dove la sede non ne ha (scelta 15.2). */
+  function applicaListaSuM(m) {
+    var r = R.applicaLista(m.schede, m.lista.perScheda);
+    r.posizioni.forEach(function (p) { if (!m.geo[p.key] && !m.pin[p.key]) m.geo[p.key] = { lat: p.lat, lon: p.lon, livello: 'lista', t: Date.now() }; });
+    return r;
   }
 
   // ------------------------------------------------------------ caricamento del master
@@ -3963,6 +4034,7 @@ window.avviaMda = function () {
         // coordinate già presenti nel file (calcolate prima): valgono come posizione del locale, salvo un ingresso segnato col GPS
         // il comune scritto a mano sul campo vale anche per le versioni successive del master
         lettura.schede.forEach(function (s) { var c = (m.comuni || {})[s.id]; if (!s.comune && c) { s.comune = c; s.comuneManuale = true; } });
+        if (m.lista) setTimeout(function () { applicaListaSuM(m); salva(); render(); }, 0);   // la lista ufficiale resta valida anche con un master nuovo
         // posizioni senza comune: cercate solo per via, spesso sbagliate di centinaia di km. Non si usano.
         // posizioni del file solo se nella zona della mandataria (entro 40 km dal punto mediano): le altre sono errori di ricerca
         var zona = R.nellaZona(lettura.schede.filter(function (s) { return s.lat != null && s.comune; }));
@@ -4248,13 +4320,14 @@ window.avviaMda = function () {
     if (b.id === 'tendina-tip') { tendinaAperta = !tendinaAperta; render(); return; }
     if (b.id === 'tendina-mio') { mioAperto = !mioAperto; render(); return; }
     if (b.id === 'crea-mio') {
-      m.mioGiro = { comuni: m.mioBozza.comuni.slice(), generi: m.mioBozza.generi.slice() }; salva();
+      m.mioGiro = { comuni: m.mioBozza.comuni.slice(), generi: m.mioBozza.generi.slice(), esclusi: Object.assign({}, m.mioBozza.esclusi || {}) }; salva();
       var cm = calcola(m), primo = cm.giri.filter(function (g) { return g.mio && g.residuo; })[0];
       mioAperto = false; giroSel = primo ? primo.key : giroSel; render();
-      toast(primo ? 'Il mio giro è pronto: ' + cm.giri.filter(function (g) { return g.mio && g.residuo; }).length + ' giri MG nella lista degli itinerari' : 'Con questa scelta non ci sono locali da lavorare');
+      var nMg = cm.giri.filter(function (g) { return g.mio && g.residuo; }).length;
+      toast(primo ? 'Il mio giro è pronto: ' + nMg + (nMg === 1 ? ' giro MG' : ' giri MG') + ' nella lista degli itinerari' : 'Con questa scelta non ci sono locali da lavorare');
       return;
     }
-    if (b.id === 'togli-mio') { m.mioGiro = null; m.mioBozza = { comuni: [], generi: [] }; giroSel = null; salva(); render(); toast('Il mio giro eliminato'); return; }
+    if (b.id === 'togli-mio') { m.mioGiro = null; m.mioBozza = { comuni: [], generi: [], esclusi: {} }; giroSel = null; salva(); render(); toast('Il mio giro eliminato'); return; }
     if (b.dataset.esito) { apriEsito(b.dataset.esito); return; }
     if (b.dataset.apriSede) { schedaAperta = b.dataset.apriSede; render(); var vv = document.getElementById('mda-vista'); if (vv) vv.scrollIntoView(); return; }
     if (b.hasAttribute('data-chiudi-scheda')) { schedaAperta = null; render(); return; }
@@ -4283,6 +4356,7 @@ window.avviaMda = function () {
     if ((k = t.dataset.fascia)) { (m.segnala[k] = m.segnala[k] || {}).fascia = t.value.trim(); salva(); render(); return; }
     if ((k = t.dataset.chiusura)) { (m.segnala[k] = m.segnala[k] || {}).chiusura = t.value.trim(); salva(); render(); return; }
     if ((k = t.dataset.chiusoOggi)) { (m.segnala[k] = m.segnala[k] || {}).chiusoOggi = t.checked ? data : ''; salva(); render(); toast(t.checked ? 'Segnato chiuso oggi: esce dalle tratte di oggi' : 'Tolta la segnalazione'); return; }
+    if (t.dataset.mioLocale != null) { m.mioBozza.esclusi = m.mioBozza.esclusi || {}; if (t.checked) delete m.mioBozza.esclusi[t.dataset.mioLocale]; else m.mioBozza.esclusi[t.dataset.mioLocale] = 1; salva(); render(); return; }
     if (t.dataset.mioComune != null || t.dataset.mioGenere != null) {
       var lista = t.dataset.mioComune != null ? m.mioBozza.comuni : m.mioBozza.generi, v = t.dataset.mioComune != null ? t.dataset.mioComune : t.dataset.mioGenere;
       if (t.checked && lista.indexOf(v) < 0) lista.push(v); if (!t.checked && lista.indexOf(v) >= 0) lista.splice(lista.indexOf(v), 1);
