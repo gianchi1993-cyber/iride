@@ -3466,7 +3466,8 @@ window.avviaMda = function () {
     var aperteDa = daAccertare.filter(function (s) { return !esitoDi(m, s.id); });
     var esc = tipEscluse(m);
     var nellInsieme = tutteLeSchede(m).filter(function (s) { return nelInsieme(m, s); });
-    var ammesse = nellInsieme.filter(function (s) { return !esc[tipologiaDi(s)]; });
+    // decisione del proponente (21/11/2026): negli itinerari solo locali con il comune; quelli senza si cercano e si completano a mano
+    var ammesse = nellInsieme.filter(function (s) { return !esc[tipologiaDi(s)] && s.comune; });
     var aperte = ammesse.filter(function (s) { return !esitoDi(m, s.id); });
     // itinerari da almeno 6 tappe, per zone collegate (regole.js, costruisciGiri); i locali aggiunti a mano entrano nella zona più vicina
     var giri = R.costruisciGiri(ammesse, { minimoTappe: 6, massimoTappe: 12, puntoDi: puntoDi(m) });
