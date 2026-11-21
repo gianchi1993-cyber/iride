@@ -342,6 +342,12 @@ nav button.segnala{color:var(--ambra)}
 .mda-cerca{min-height:46px}
 .mda-due{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.mda-due label{display:flex;flex-direction:column;gap:5px}
 .mda-pos{margin-top:8px;color:var(--turchese)}
+.mda-consigliati{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.mda-consiglio{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;border:1px solid var(--bordo-forte);border-radius:12px;background:var(--velo);padding:10px 12px;color:var(--chiaro)}
+.mda-consiglio b{font:600 14.5px/1.25 var(--display)}.mda-consiglio span{font-size:12.5px;color:var(--tenue)}
+.mda-consiglio.on{border-color:var(--turchese);box-shadow:inset 3px 0 0 var(--turchese)}
+.badge.mda-orario-aperto{color:var(--turchese);border-color:var(--turchese)}.badge.mda-orario-apre{color:var(--ambra);border-color:var(--ambra)}
+.badge.mda-orario-chiuso{color:var(--rosso);border-color:var(--rosso)}.badge.mda-orario-sconosciuto{color:var(--spento)}
 .mda-giro h2{font:600 22px/1.15 var(--display);margin:8px 0 2px}
 .mda-etich{display:flex;gap:6px}.mda-etich b,.mda-etich span{font:700 11px/1 var(--mono);border-radius:6px;padding:4px 7px}
 .mda-etich b{background:var(--turchese);color:var(--su-accento)}.mda-etich span{border:1px solid var(--bordo-forte)}
@@ -1323,6 +1329,133 @@ svg.mappa{width:100%;height:auto;display:block}
     return base === nomeFileMaster(nomeMandataria).toLowerCase().replace(/\s+/g, ' ');
   }
 
+  // ------------------------------------------------------------ orari di apertura (dal master o da OpenStreetMap)
+  // Formati letti: «Lun-Ven: 09:00 - 13:00, 16:00 - 20:00; Sab: 10:00 - 12:00», «Lun-Dom: Aperto 24 ore»,
+  // aperture notturne («18:00 - 02:00»), elenchi («Lun-Mar, Gio-Dom», «Lun e Dom») e il formato di OpenStreetMap
+  // («Mo-Fr 09:00-13:00,16:00-20:00; Sa 10:00-12:00»). Numeri dei giorni come Date.getDay(): 0 = domenica.
+  var GIORNI_IT = { dom: 0, lun: 1, mar: 2, mer: 3, gio: 4, ven: 5, sab: 6, su: 0, mo: 1, tu: 2, we: 3, th: 4, fr: 5, sa: 6 };
+  var NOMI_GIORNI = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+
+  function giornoDa(t) {
+    var k = normalizza(t).replace(/[^a-z]/g, '');
+    return GIORNI_IT[k.slice(0, 3)] != null ? GIORNI_IT[k.slice(0, 3)] : GIORNI_IT[k.slice(0, 2)] != null ? GIORNI_IT[k.slice(0, 2)] : null;
+  }
+  function elencoGiorni(testo) {
+    var out = [];
+    String(testo).split(/,|\se\s|\sand\s/i).forEach(function (pezzo) {
+      var r = pezzo.trim().split(/\s*-\s*/);
+      var a = giornoDa(r[0]), b = r[1] != null ? giornoDa(r[1]) : a;
+      if (a == null || b == null) return;
+      for (var g = a, n = 0; n < 7; g = (g + 1) % 7, n++) { if (out.indexOf(g) < 0) out.push(g); if (g === b) break; }
+    });
+    return out;
+  }
+  function minuti(h, m) { return (+h) * 60 + (+m); }
+
+  /** Testo degli orari -> { stato: 'documentato' | 'sconosciuto' | 'chiuso', giorni: { 0..6: [[inizio, fine], ...] } } (minuti dalla mezzanotte). */
+  function leggiOrari(testo) {
+    var t = String(testo || '').trim();
+    if (!t) return { stato: 'sconosciuto', giorni: {} };
+    if (/chiuso (definitivamente|temporaneamente)|permanently closed/i.test(t)) return { stato: 'chiuso', giorni: {} };
+    if (/^(non |n\.d|da verificare)/i.test(t)) return { stato: 'sconosciuto', giorni: {} };
+    t = t.replace(/\([^)]*\)/g, ' ');                                     // note tra parentesi
+    if (/^24\/7$/.test(t.trim())) t = 'Mo-Su 00:00-24:00';
+    var giorni = {}, trovato = false;
+    t.split(';').forEach(function (seg) {
+      var m = seg.match(/^\s*([A-Za-zÀ-ÿ ,\-]+?)\s*:?\s+((?:\d|aperto|chiuso|off|closed).*)$/i) || seg.match(/^\s*([A-Za-zÀ-ÿ ,\-]+?):\s*(.*)$/);
+      if (!m) return;
+      var gg = elencoGiorni(m[1]);
+      if (!gg.length) return;
+      var fasce = [];
+      if (/24\s*ore|24\/7|00:00\s*-\s*24:00/i.test(m[2])) fasce.push([0, 1440]);
+      else if (!/chiuso|off|closed/i.test(m[2])) {
+        var re = /(\d{1,2})[:.](\d{2})\s*-\s*(\d{1,2})[:.](\d{2})/g, x;
+        while ((x = re.exec(m[2]))) {
+          var a = minuti(x[1], x[2]), b = minuti(x[3], x[4]);
+          if (b <= a) b += 1440;                                          // apertura che passa la mezzanotte
+          fasce.push([a, b]);
+        }
+      }
+      gg.forEach(function (g) { giorni[g] = fasce; });
+      trovato = true;
+    });
+    if (!trovato) {
+      // solo orari, senza giorni («18:00-02:00», «09:00-13:00 / 16:00-20:00»): valgono tutti i giorni
+      var re2 = /(\d{1,2})[:.](\d{2})\s*-\s*(\d{1,2})[:.](\d{2})/g, y, tutti = [];
+      while ((y = re2.exec(t))) { var a2 = minuti(y[1], y[2]), b2 = minuti(y[3], y[4]); if (b2 <= a2) b2 += 1440; tutti.push([a2, b2]); }
+      if (!tutti.length) return { stato: 'sconosciuto', giorni: {} };
+      for (var k = 0; k < 7; k++) giorni[k] = tutti.slice();
+      return { stato: 'documentato', giorni: giorni, senzaGiorni: true };
+    }
+    for (var g = 0; g < 7; g++) if (!giorni[g]) giorni[g] = [];         // giorni non elencati: chiuso
+    return { stato: 'documentato', giorni: giorni };
+  }
+
+  /** «Giorno di chiusura» -> il giorno indicato è di chiusura? («Nessuno (…)» e «Non …» non chiudono mai). */
+  function chiusoNelGiorno(testo, giorno) {
+    var t = String(testo || '').trim();
+    if (!t || /^(nessun|non |n\.d)/i.test(t)) return false;
+    t = t.replace(/\([^)]*\)/g, ' ');
+    return elencoGiorni(t.replace(/\//g, ',')).indexOf(giorno) >= 0;
+  }
+
+  function hhmm(min) { min = ((min % 1440) + 1440) % 1440; return String(Math.floor(min / 60)).padStart(2, '0') + ':' + String(min % 60).padStart(2, '0'); }
+
+  /**
+   * Stato all'ora indicata: { stato: 'aperto' | 'apre' | 'chiuso' | 'sconosciuto', fino?, alle? }.
+   * Tiene conto delle aperture notturne del giorno prima. quando: Date.
+   */
+  function statoOrario(orari, chiusura, quando) {
+    var g = quando.getDay(), ora = quando.getHours() * 60 + quando.getMinutes();
+    if (orari.stato === 'chiuso') return { stato: 'chiuso', motivo: 'chiuso secondo Google' };
+    if (orari.stato !== 'documentato') return chiusoNelGiorno(chiusura, g) ? { stato: 'chiuso', motivo: 'giorno di chiusura' } : { stato: 'sconosciuto' };
+    var ieri = orari.giorni[(g + 6) % 7] || [], oggi = orari.giorni[g] || [];
+    for (var i = 0; i < ieri.length; i++) if (ieri[i][1] > 1440 && ora < ieri[i][1] - 1440) return { stato: 'aperto', fino: hhmm(ieri[i][1]) };
+    for (var j = 0; j < oggi.length; j++) {
+      if (ora >= oggi[j][0] && ora < oggi[j][1]) return { stato: 'aperto', fino: oggi[j][1] >= 1440 && oggi[j][0] === 0 && oggi[j][1] === 1440 ? '24 ore' : hhmm(oggi[j][1]) };
+    }
+    var dopo = oggi.filter(function (f) { return f[0] > ora; }).sort(function (a, b) { return a[0] - b[0]; })[0];
+    if (dopo) return { stato: 'apre', alle: hhmm(dopo[0]) };
+    return { stato: 'chiuso', motivo: oggi.length ? 'chiuso per oggi' : 'giorno di chiusura' };
+  }
+
+  /**
+   * Giri consigliati adesso (manuale «Bacini, priorità e residui», confronto del turno):
+   * per ogni giro si contano le tappe aperte ora (orario documentato), quelle plausibili (orario non noto) e quelle
+   * che aprono più tardi; il punteggio usa i pesi del profilo A con la progressione (densità e valore sulle tappe
+   * lavorabili adesso, facilità = quota con orario documentato) e, se c'è la posizione, la vicinanza in linea d'aria.
+   * Vicinanza (efficienza degli spostamenti) = 1 / (1 + km / 5) [IPOTESI: a 5 km vale la metà]; senza posizione 1 / numero di comuni.
+   * Con la posizione vengono prima i giri con una tappa lavorabile entro 15 km [IPOTESI], poi gli altri.
+   * giri: [{ sedi }]; statoDi(sede) -> statoOrario; puntoDi(sede); pos: {lat, lon} | null. -> elenco ordinato.
+   */
+  function giriConsigliati(giri, pesi, statoDi, puntoDi, pos, raggioKm) {
+    var righe = giri.map(function (g) {
+      var aperte = [], plausibili = [], dopo = [];
+      g.sedi.forEach(function (x) {
+        var s = statoDi(x);
+        if (s.stato === 'aperto') aperte.push(x); else if (s.stato === 'sconosciuto') plausibili.push(x); else if (s.stato === 'apre') dopo.push(x);
+      });
+      var lav = aperte.concat(plausibili);
+      var imp = function (l) { return Math.round(l.reduce(function (n, x) { return n + x.schede.reduce(function (m, s) { return m + (s.importo || 0); }, 0); }, 0) * 100) / 100; };
+      var vicina = null;
+      if (pos) lav.forEach(function (x) { var p = puntoDi(x); if (p) { var d = distanzaMetri(pos, p); if (!vicina || d < vicina.metri) vicina = { sede: x, metri: d }; } });
+      var perVia = {}; lav.forEach(function (x) { perVia[x.via] = (perVia[x.via] || 0) + 1; });
+      var comuni = {}; lav.forEach(function (x) { comuni[normalizza(x.comune)] = 1; });
+      return { giro: g, aperte: aperte, plausibili: plausibili, dopo: dopo, lavorabili: lav, importoAperte: imp(aperte), importoPlausibili: imp(plausibili), importo: imp(lav), vicina: vicina,
+        D: lav.length ? lav.filter(function (x) { return x.via !== 'senza via' && perVia[x.via] >= 2; }).length / lav.length : 0,
+        F: lav.length ? aperte.length / lav.length : 0,
+        E: pos ? (vicina ? 1 / (1 + vicina.metri / 5000) : 0) : 1 / Math.max(1, Object.keys(comuni).length) };
+    }).filter(function (r) { return r.lavorabili.length; });
+    var maxImp = righe.reduce(function (m, r) { return Math.max(m, r.importo); }, 0);
+    righe.forEach(function (r) {
+      r.V = maxImp ? r.importo / maxImp : 0;
+      r.punti = pesi.densita * r.D + pesi.valore * r.V + pesi.facilita * r.F + pesi.efficienza * r.E;   // pesi del profilo A, totale 100
+      // fattibilità nel turno: con la posizione, prima i giri raggiungibili (tappa lavorabile entro il raggio) [IPOTESI: 15 km]
+      r.raggiungibile = !pos || (r.vicina && r.vicina.metri <= (raggioKm || 15) * 1000);
+    });
+    return righe.sort(function (a, b) { return (b.raggiungibile - a.raggiungibile) || b.punti - a.punti; });
+  }
+
   // ------------------------------------------------------------ passaggio tra ARGO e IRIDE (stessa persona, senza rientrare)
   /** Da ARGO a IRIDE: chi è abilitato agli accertamenti (in IRIDE registra gli esiti), l'Area Manager
    *  (in IRIDE può inviare segnalazioni; gli esiti restano a chi è nella squadra) e l'amministratore della demo. */
@@ -1622,6 +1755,7 @@ svg.mappa{width:100%;height:auto;display:block}
     statiElenco: statiElenco, puoCreareLavoroDaElenco: puoCreareLavoroDaElenco, numeroDa: numeroDa,
     riconosciColonneMaster: riconosciColonneMaster, leggiMaster: leggiMaster, vuoto: vuoto, inItinerario: inItinerario, statoScheda: statoScheda,
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
+    leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
@@ -3062,12 +3196,41 @@ window.avviaMda = function () {
   var GIORNI = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
   /** Chiuso nel giorno di uscita? Segnalazione «chiuso oggi», Stato Google «chiuso…», oppure giorno di chiusura = giorno di uscita.
    *  L'operatore può includerlo lo stesso («verifica sul posto»). */
+  /** Orari della sede: quelli corretti a mano, poi quelli del master, poi quelli di OpenStreetMap. */
+  function orariDi(m, sede) {
+    var sg = segnalaDi(m, sede.key), s0 = sede.schede[0] || {}, osm = m.geo[sede.key] && m.geo[sede.key].orari;
+    var o = R.leggiOrari(sg.fascia || s0.fascia || '');
+    if (o.stato === 'sconosciuto' && osm) o = R.leggiOrari(osm);
+    if (/chius[oa] (definitivamente|temporaneamente)/i.test(s0.statoGoogle || '')) o = { stato: 'chiuso', giorni: {} };
+    return o;
+  }
+  function chiusuraDi(m, sede) { return segnalaDi(m, sede.key).chiusura || (sede.schede[0] || {}).chiusura || ''; }
+  /** Stato orario: adesso se il giorno di uscita è oggi, altrimenti per l'intera giornata scelta. */
+  function statoDi(m, sede) {
+    var sg = segnalaDi(m, sede.key);
+    if (sg.chiusoOggi === data) return { stato: 'chiuso', motivo: 'segnalato chiuso oggi' };
+    var o = orariDi(m, sede), ch = chiusuraDi(m, sede);
+    // orari senza giorni: il giorno di chiusura indicato a parte prevale
+    if (o.senzaGiorni && R.chiusoNelGiorno(ch, new Date(data + 'T12:00').getDay())) return { stato: 'chiuso', motivo: 'giorno di chiusura' };
+    if (data === oggi()) return R.statoOrario(o, ch, new Date());
+    var g = new Date(data + 'T12:00').getDay();
+    if (o.stato === 'chiuso') return { stato: 'chiuso', motivo: 'chiuso secondo Google' };
+    if (o.stato === 'documentato') return (o.giorni[g] || []).length ? { stato: 'aperto', fino: 'nel giorno' } : { stato: 'chiuso', motivo: 'giorno di chiusura' };
+    return R.chiusoNelGiorno(ch, g) ? { stato: 'chiuso', motivo: 'giorno di chiusura' } : { stato: 'sconosciuto' };
+  }
+  /** Chiuso per tutto il giorno di uscita (esce dalle tratte, resta da lavorare). L'operatore può includerlo lo stesso. */
   function chiusaOggi(m, sede) {
-    var sg = segnalaDi(m, sede.key), s0 = sede.schede[0] || {}, g = s0.statoGoogle || '';
+    var sg = segnalaDi(m, sede.key);
     if (sg.includi === data) return false;
-    var giorno = GIORNI[new Date(data + 'T12:00').getDay()];
-    var chiusura = R.normalizza(sg.chiusura || s0.chiusura || '');
-    return sg.chiusoOggi === data || /chius/i.test(g) || (!!chiusura && chiusura.indexOf(R.normalizza(giorno)) >= 0);
+    if (sg.chiusoOggi === data) return true;
+    var o = orariDi(m, sede), g = new Date(data + 'T12:00').getDay();
+    if (o.stato === 'chiuso') return true;
+    if (o.senzaGiorni) return R.chiusoNelGiorno(chiusuraDi(m, sede), g);
+    if (o.stato === 'documentato') return !(o.giorni[g] || []).length && !((o.giorni[(g + 6) % 7] || []).some(function (f) { return f[1] > 1440; }));
+    return R.chiusoNelGiorno(chiusuraDi(m, sede), g);
+  }
+  function testoStato(s) {
+    return s.stato === 'aperto' ? (s.fino === 'nel giorno' ? 'Aperto nel giorno' : 'Aperto ora · fino alle ' + s.fino) : s.stato === 'apre' ? 'Apre alle ' + s.alle : s.stato === 'chiuso' ? 'Chiuso · ' + (s.motivo || '') : 'Orari da verificare';
   }
   function numCivico(ind) { var x = String(ind || '').match(/(?:^|\s-\s|\s)(\d+)/g); return x ? parseInt(x[x.length > 1 ? 1 : 0].replace(/\D/g, ''), 10) || 0 : 0; }
 
@@ -3181,7 +3344,7 @@ window.avviaMda = function () {
       '<label class="et">Itinerario<select id="sel-giro">' + giri.map(function (x) { return '<option value="' + esc(x.key) + '"' + (x.key === g.key ? ' selected' : '') + '>' + esc(x.codice + ' · ' + x.nome + ' · ' + x.classe) + '</option>'; }).join('') + '</select></label></div>' +
       '<div class="azioni"><button class="az forte" id="pos">' + ic('mirino') + (osserva != null ? 'Posizione attiva · giro più vicino' : 'Usa la mia posizione · trova il giro più vicino') + '</button>' +
       '<button class="az" id="programma">' + (m.programma[data] === g.key ? 'Programmato per questo giorno' : 'Programma questo giro') + '</button></div>' +
-      (posMsg ? '<p class="sub mda-pos">' + esc(posMsg) + '</p>' : '') +
+      (posMsg ? '<p class="sub mda-pos">' + esc(posMsg) + '</p>' : '') + consigliati(m, c, giri) +
       (m.programma[data] && m.programma[data] !== g.key ? '<p class="sub">Per questo giorno era programmato ' + esc((giri.filter(function (x) { return x.key === m.programma[data]; })[0] || {}).codice || 'un altro giro') + '.</p>' : '') + '</section>';
     // riquadro del giro
     var p = c.pesi;
@@ -3211,6 +3374,20 @@ window.avviaMda = function () {
     return h;
   }
 
+  /** I tre giri più utili adesso (orari, valore, densità e, con la posizione, distanza). */
+  function consigliati(m, c, giri) {
+    var r = R.giriConsigliati(giri, c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos).slice(0, 3);
+    if (!r.length) return '';
+    var km = function (v) { return v.vicina ? ' · a ' + (v.vicina.metri < 1000 ? Math.round(v.vicina.metri) + ' m' : (v.vicina.metri / 1000).toFixed(1) + ' km') : ''; };
+    return '<div class="mda-consigliati"><span class="et">' + (pos ? 'Più utili adesso da dove sei' : data === oggi() ? 'Più utili adesso' : 'Più utili in questo giorno') + '</span>' +
+      r.map(function (v, i) {
+        return '<button class="mda-consiglio' + (v.giro.key === giroSel ? ' on' : '') + '" data-consiglio="' + esc(v.giro.key) + '"><b>' + (i + 1) + '. ' + esc(v.giro.codice) + ' · ' + esc(v.giro.nome) + '</b><span>' +
+          v.aperte.length + (v.aperte.length === 1 ? ' aperta' : ' aperte') + (data === oggi() ? ' ora' : '') + (v.plausibili.length ? ' + ' + v.plausibili.length + ' da verificare' : '') + (v.dopo.length ? ' · ' + v.dopo.length + (v.dopo.length === 1 ? ' apre' : ' aprono') + ' più tardi' : '') +
+          ' · ' + euro(v.importo) + km(v) + (v.raggiungibile ? '' : ' · lontano') + '</span></button>';
+      }).join('') + '<p class="sub">Ordine secondo il profilo A sulle tappe lavorabili' + (data === oggi() ? ' adesso' : '') + ': densità ' + c.pesi.densita.toFixed(0) + ', valore ' + c.pesi.valore.toFixed(0) +
+      ', orari documentati 20, distanza 10' + (pos ? '; prima i giri con una tappa entro 15 km' : '') + '.</p></div>';
+  }
+
   function tappa(m, x, n) {
     var pd = puntoDi(m), p = pd(x), sg = segnalaDi(m, x.key), s0 = x.schede[0];
     var aperte = x.schede.filter(function (s) { return !esitoDi(m, s.id); });
@@ -3227,7 +3404,8 @@ window.avviaMda = function () {
     var h = '<article class="foglio mda-tappa' + (chiusaOggi(m, x) ? ' chiusa' : '') + '" data-sede="' + esc(x.key) + '"><div class="mda-n"><span>Tappa</span><b>' + (n >= 0 ? n + 1 : '—') + '</b></div><div class="mda-corpo">' +
       '<div class="et">' + (x.daGiro ? 'da ' + esc(x.daGiro.codice) + ' · ' : '') + esc(x.comune) + ' · ' + esc(x.tipologia || 'tipologia n.d.') + (dist != null ? ' · ' + (dist < 1000 ? Math.round(dist) + ' m' : (dist / 1000).toFixed(1) + ' km') : '') + '</div>' +
       '<h3 class="mda-nome">' + esc(x.nome) + '</h3><p class="mda-ind">' + esc(x.indirizzo) + '</p>' +
-      '<div class="badges">' + (insieme(m) !== 'da' ? x.schede.map(function (s) { var st = R.statoScheda(s); return '<span class="badge mda-' + st.colore + '">' + esc(st.etichetta) + '</span>'; }).join('') : '') +
+      '<div class="badges">' + (function () { var s = statoDi(m, x); return '<span class="badge mda-orario-' + s.stato + '">' + esc(testoStato(s)) + '</span>'; })() +
+      (insieme(m) !== 'da' ? x.schede.map(function (s) { var st = R.statoScheda(s); return '<span class="badge mda-' + st.colore + '">' + esc(st.etichetta) + '</span>'; }).join('') : '') +
       (fascia ? '<span class="badge">Fascia: ' + esc(fascia) + '</span>' : '<span class="badge mda-verif">Apertura da verificare</span>') +
       (chiusura ? '<span class="badge">Chiuso: ' + esc(chiusura) + '</span>' : '') +
       (m.geo[x.key] && m.geo[x.key].orari ? '<span class="badge">OpenStreetMap: ' + esc(m.geo[x.key].orari) + '</span>' : '') + segn.map(function (t) { return '<span class="badge cr">' + ic('avviso') + esc(t) + '</span>'; }).join('') + '</div>' +
@@ -3412,9 +3590,11 @@ window.avviaMda = function () {
     osserva = navigator.geolocation.watchPosition(function (p) {
       pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
       var m = M(), c = calcola(m), giri = c.giri.filter(function (g) { return g.residuo; });
-      var best = R.giroPiuVicino(giri.map(function (g) { return { giro: g, sedi: g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }) && !chiusaOggi(m, x); }) }; }), pos, puntoDi(m));
-      if (best && prima) { giroSel = best.giro.giro.key; }
-      posMsg = 'Posizione attiva (±' + Math.round(pos.acc) + ' m) · ' + (best ? 'giro più vicino: ' + best.giro.giro.codice + ' · ' + best.sede.nome + ' a ' + (best.metri < 1000 ? Math.round(best.metri) + ' m' : (best.metri / 1000).toFixed(1) + ' km') : 'nessun locale aperto con posizione nota: usa «Segna ingresso con GPS» o la ricerca posizioni');
+      var aperteSedi = function (g) { return g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); }); };
+      var r = R.giriConsigliati(giri.map(function (g) { return Object.assign({}, g, { sedi: aperteSedi(g), originale: g }); }), c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos);
+      var best = r[0];
+      if (best && prima) { giroSel = best.giro.key; }
+      posMsg = 'Posizione attiva (±' + Math.round(pos.acc) + ' m) · ' + (best ? 'giro più utile adesso: ' + best.giro.codice + ' · ' + best.aperte.length + (best.aperte.length === 1 ? ' aperta ora' : ' aperte ora') + (best.vicina ? ', la più vicina a ' + (best.vicina.metri < 1000 ? Math.round(best.vicina.metri) + ' m' : (best.vicina.metri / 1000).toFixed(1) + ' km') : '') : 'nessun locale lavorabile adesso con posizione nota: usa «Segna ingresso con GPS» o la ricerca posizioni');
       prima = false;
       if (!document.querySelector('.ovl')) render();
     }, function (err) {
@@ -3563,6 +3743,7 @@ window.avviaMda = function () {
     if (b.id === 'cerca-via') { cerca = ''; render(); return; }
     if (b.id === 'pos') { usaPosizione(); return; }
     if (b.id === 'programma') { m.programma[data] = giroSel; salva(); render(); toast('Giro programmato per il ' + data); return; }
+    if (b.dataset.consiglio) { giroSel = b.dataset.consiglio; render(); return; }
     if (b.dataset.insieme) { m.insieme = b.dataset.insieme; giroSel = null; salva(); render(); return; }
     if (b.id === 'tendina-tip') { tendinaAperta = !tendinaAperta; render(); return; }
     if (b.dataset.esito) { apriEsito(b.dataset.esito); return; }
