@@ -1613,10 +1613,24 @@ svg.mappa{width:100%;height:auto;display:block}
    * La posizione della lista si usa solo dove la sede non ne ha già una (scelta 15.2): lo decide chi chiama, con .posizioni.
    * perScheda: { idScheda: { comune, indirizzo, lat, lon } } -> { cambiate, posizioni: [{ key, lat, lon }] }
    */
+  /**
+   * Comuni corretti a mano dall'accertatore (scelta 20.3): prevalgono su master e lista ufficiale, perché sono verificati
+   * sul posto. comuni = { id scheda: comune }. Il comune del file resta in s.comuneOrig, così cancellando la correzione si torna a quello.
+   */
+  function applicaComuniManuali(schede, comuni) {
+    schede.forEach(function (s) {
+      var c = (comuni || {})[s.id];
+      if (!c) return;
+      if (!s.comuneManuale) s.comuneOrig = s.comune || '';
+      s.comune = c; s.comuneManuale = true;
+    });
+  }
+
   function applicaLista(schede, perScheda) {
     var cambiate = 0, posizioni = [];
     schede.forEach(function (s) {
       var l = perScheda[s.id];
+      if (s.comuneManuale) { s.comune = s.comuneOrig || ''; s.comuneManuale = false; }   // la correzione a mano si riapplica dopo
       if (!l) { s.inLista = false; return; }
       s.inLista = true;
       var comune = l.comune || s.comune, indirizzo = l.indirizzo || s.indirizzo;
@@ -2003,7 +2017,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, applicaComuniManuali: applicaComuniManuali, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -3811,7 +3825,7 @@ window.avviaMda = function () {
       (chiusura ? '<span class="badge">Chiuso: ' + esc(chiusura) + '</span>' : '') +
       segn.map(function (t) { return '<span class="badge cr">' + ic('avviso') + esc(t) + '</span>'; }).join('') + '</div>' +
       '<details><summary>Dati fiscali e scheda</summary>' + datiFiscali(x) + '</details>' +
-      (!x.comune || (x.schede[0] || {}).comuneManuale || (x.schede[0] || {}).comuneDa ? '<label class="et mda-comune">Comune' + ((x.schede[0] || {}).comuneManuale ? ' (scritto da te)' : x.comune ? ' (ricavato da ' + esc(x.schede[0].comuneDa) + ': correggilo se è sbagliato)' : ' · manca nel master: scrivilo per metterlo nel giro giusto') + '<input data-comune="' + esc(x.schede.map(function (s) { return s.id; }).join(',')) + '" value="' + esc(x.comune || '') + '" placeholder="Es. Fontebella"></label>' : '') +
+      '<label class="et mda-comune">Comune' + fonteComune(x.schede[0] || {}, x.comune) + '<input data-comune="' + esc(x.schede.map(function (s) { return s.id; }).join(',')) + '" value="' + esc(x.comune || '') + '" placeholder="Es. Fontebella"></label>' +
       '<details><summary>Orari e segnalazioni</summary><div class="mda-modifica">' +
       '<label class="et">Fascia oraria<input data-fascia="' + esc(x.key) + '" value="' + esc(fascia || '') + '" placeholder="Es. 18:00-24:00"></label>' +
       '<label class="et">Giorno di chiusura<input data-chiusura="' + esc(x.key) + '" value="' + esc(chiusura || '') + '" placeholder="Es. lunedì"></label>' +
@@ -4021,8 +4035,18 @@ window.avviaMda = function () {
   }
 
   /** Applica la lista ufficiale alle schede della mandataria; le posizioni della lista solo dove la sede non ne ha (scelta 15.2). */
+  /** Da dove viene il comune della scheda (scelta 20.3: si può sempre correggere a mano). */
+  function fonteComune(s, comune) {
+    if (s.comuneManuale) return ' (scritto da te' + (s.comuneOrig ? '; nel file era ' + esc(s.comuneOrig) : '') + '; cancellalo per tornare a quello del file)';
+    if (!comune) return ' · manca nel master: scrivilo per metterlo nel giro giusto';
+    if (s.inLista) return ' (dalla lista ufficiale: correggilo se è sbagliato)';
+    if (s.comuneDa) return ' (ricavato da ' + esc(s.comuneDa) + ': correggilo se è sbagliato)';
+    return ' (dal master: correggilo se è sbagliato)';
+  }
+
   function applicaListaSuM(m) {
     var r = R.applicaLista(m.schede, m.lista.perScheda);
+    R.applicaComuniManuali(m.schede, m.comuni);
     r.posizioni.forEach(function (p) { if (!m.geo[p.key] && !m.pin[p.key]) m.geo[p.key] = { lat: p.lat, lon: p.lon, livello: 'lista', t: Date.now() }; });
     return r;
   }
@@ -4048,7 +4072,7 @@ window.avviaMda = function () {
         m.schede = lettura.schede;
         // coordinate già presenti nel file (calcolate prima): valgono come posizione del locale, salvo un ingresso segnato col GPS
         // il comune scritto a mano sul campo vale anche per le versioni successive del master
-        lettura.schede.forEach(function (s) { var c = (m.comuni || {})[s.id]; if (!s.comune && c) { s.comune = c; s.comuneManuale = true; } });
+        R.applicaComuniManuali(lettura.schede, m.comuni);
         if (m.lista) setTimeout(function () { applicaListaSuM(m); salva(); render(); }, 0);   // la lista ufficiale resta valida anche con un master nuovo
         // posizioni senza comune: cercate solo per via, spesso sbagliate di centinaia di km. Non si usano.
         // posizioni del file solo se nella zona della mandataria (entro 40 km dal punto mediano): le altre sono errori di ricerca
@@ -4366,8 +4390,13 @@ window.avviaMda = function () {
     var k;
     if ((k = t.dataset.comune)) {
       var nuovo = t.value.trim(), ids = k.split(','); m.comuni = m.comuni || {};
-      tutteLeSchede(m).forEach(function (s) { if (ids.indexOf(s.id) < 0) return; s.comune = nuovo; s.comuneManuale = !!nuovo; if (nuovo) m.comuni[s.id] = nuovo; else delete m.comuni[s.id]; });
-      giroSel = null; salva(); render(); toast(nuovo ? 'Comune scritto: il locale passa ai giri di ' + nuovo : 'Comune tolto'); return;
+      var torna = '';
+      tutteLeSchede(m).forEach(function (s) {
+        if (ids.indexOf(s.id) < 0) return;
+        if (nuovo) { if (!s.comuneManuale) s.comuneOrig = s.comune || ''; s.comune = nuovo; s.comuneManuale = true; m.comuni[s.id] = nuovo; }
+        else { if (s.comuneManuale) s.comune = s.comuneOrig || ''; s.comuneManuale = false; delete m.comuni[s.id]; torna = s.comune; }
+      });
+      giroSel = null; salva(); render(); toast(nuovo ? 'Comune scritto: il locale passa ai giri di ' + nuovo : torna ? 'Correzione tolta: torna ' + torna : 'Comune tolto'); return;
     }
     if ((k = t.dataset.fascia)) { (m.segnala[k] = m.segnala[k] || {}).fascia = t.value.trim(); salva(); render(); return; }
     if ((k = t.dataset.chiusura)) { (m.segnala[k] = m.segnala[k] || {}).chiusura = t.value.trim(); salva(); render(); return; }
