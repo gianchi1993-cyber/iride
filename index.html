@@ -3382,9 +3382,22 @@ window.avviaMda = function () {
       h += cerca ? vistaRicerca(m, c) : tab === 'itin' ? vistaItinerari(m, c) : tab === 'reg' ? vistaRegistro(m, c) : tab === 'val' ? vistaFoglio(m, c, true) : tab === 'tutte' ? vistaFoglio(m, c, false) : vistaAggiungi(m, c);
     }
     h += '</main><div id="toast" class="toast"></div>';
-    var y = window.scrollY; app.innerHTML = h; window.scrollTo(0, y);
+    // il ridisegno conserva le sezioni aperte (riconosciute dal titolo e dall'ordine) e il punto della pagina
+    var aperte = {}, y = window.scrollY;
+    sezioni().forEach(function (d) { if (d.open) aperte[d.dataset.id] = 1; });
+    app.innerHTML = h;
+    sezioni().forEach(function (d) { if (aperte[d.dataset.id]) d.open = true; });
+    window.scrollTo(0, y);
     var ci = document.getElementById('cerca');
     if (ci) ci.addEventListener('input', function () { cerca = ci.value.trim(); var p = ci.selectionStart; render(); var n = document.getElementById('cerca'); n.focus(); try { n.setSelectionRange(p, p); } catch (e) { /* */ } });
+  }
+
+  function sezioni() {
+    var visti = {};
+    return Array.prototype.map.call(app.querySelectorAll('details'), function (d) {
+      var s = d.querySelector('summary'), nome = s ? s.textContent.split(' · ')[0] : '';
+      visti[nome] = (visti[nome] || 0) + 1; d.dataset.id = nome + '#' + visti[nome]; return d;
+    });
   }
 
   // ---- Itinerari: «Giornata sul campo»
@@ -3727,9 +3740,13 @@ window.avviaMda = function () {
     if (!navigator.geolocation) { posMsg = 'Questo browser non dà la posizione.'; render(); return; }
     if (osserva != null) { navigator.geolocation.clearWatch(osserva); osserva = null; pos = null; posMsg = 'Posizione spenta.'; render(); return; }
     posMsg = 'Attendo la posizione… (consenti l\'accesso alla posizione se il telefono lo chiede)'; render();
-    var prima = true;
+    var prima = true, ultima = null;
     osserva = navigator.geolocation.watchPosition(function (p) {
-      pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
+      var nuova = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() };
+      if (!prima && ultima && R.distanzaMetri(ultima, nuova) < 50 && nuova.t - ultima.t < 60000) return;
+      var campo = document.activeElement;
+      if (!prima && campo && /^(INPUT|TEXTAREA|SELECT)$/.test(campo.tagName)) return;   // non disturbare chi sta scrivendo
+      pos = ultima = nuova;
       var m = M(), c = calcola(m), giri = c.giri.filter(function (g) { return g.residuo; });
       var aperteSedi = function (g) { return g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); }); };
       var r = R.giriConsigliati(giri.map(function (g) { return Object.assign({}, g, { sedi: aperteSedi(g), originale: g }); }), c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos);
