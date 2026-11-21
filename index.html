@@ -1606,6 +1606,17 @@ svg.mappa{width:100%;height:auto;display:block}
    * giri: giri fissi con .codice; aperta(sede) -> true se ha ancora schede senza esito.
    * -> { recupero: [giri RE con .key stabile, .da = codici d'origine], accorpati: { key giro fisso: true } }
    */
+  /**
+   * Posizioni credibili della zona: si parte dal punto mediano e si scartano quelle oltre raggioKm (default 40).
+   * Una posizione sbagliata di un file (una via omonima a centinaia di km) non deve finire negli itinerari.
+   * punti: [{ lat, lon }] -> funzione che dice se un punto sta nella zona
+   */
+  function nellaZona(punti, raggioKm) {
+    if (!punti.length) return function () { return true; };
+    var med = function (k) { var v = punti.map(function (p) { return p[k]; }).sort(function (a, b) { return a - b; }); return v[Math.floor(v.length / 2)]; };
+    var c = { lat: med('lat'), lon: med('lon') }, r = (raggioKm || 40) * 1000;
+    return function (p) { return distanzaMetri(c, p) <= r; };
+  }
   function giriDiRecupero(giri, aperta, opzioni) {
     opzioni = opzioni || {};
     var soglia = opzioni.soglia || 6;
@@ -1962,7 +1973,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -3952,7 +3963,9 @@ window.avviaMda = function () {
         // il comune scritto a mano sul campo vale anche per le versioni successive del master
         lettura.schede.forEach(function (s) { var c = (m.comuni || {})[s.id]; if (!s.comune && c) { s.comune = c; s.comuneManuale = true; } });
         // posizioni senza comune: cercate solo per via, spesso sbagliate di centinaia di km. Non si usano.
-        lettura.schede.forEach(function (s) { if (s.lat != null && s.comune) m.geo[R.sedeDi(s)] = { lat: s.lat, lon: s.lon, livello: 'file', t: Date.now() }; });
+        // posizioni del file solo se nella zona della mandataria (entro 40 km dal punto mediano): le altre sono errori di ricerca
+        var zona = R.nellaZona(lettura.schede.filter(function (s) { return s.lat != null && s.comune; }));
+        lettura.schede.forEach(function (s) { if (s.lat != null && s.comune && zona(s)) m.geo[R.sedeDi(s)] = { lat: s.lat, lon: s.lon, livello: 'file', t: Date.now() }; });
         m.master = { file: file.name, caricatoIl: oggi(), righeLette: lettura.righeLette, schede: lettura.schede.length };
         if (!m.N) m.N = ammesse.length;             // schede aperte all'avvio della campagna: base della progressione
         salva(); tab = 'itin'; giroSel = null; render();
