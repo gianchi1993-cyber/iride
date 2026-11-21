@@ -3559,7 +3559,9 @@ window.avviaMda = function () {
 
   /** I tre giri più utili adesso (orari, valore, densità e, con la posizione, distanza). */
   function consigliati(m, c, giri) {
-    var r = R.giriConsigliati(giri, c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos).slice(0, 3);
+    // solo le tappe ancora senza esito: prima contava anche quelle già fatte e i consigli restavano sempre gli stessi
+    var soloAperte = giri.map(function (g) { return Object.assign({}, g, { originale: g, sedi: g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); }) }); });
+    var r = R.giriConsigliati(soloAperte, c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos).slice(0, 3);
     if (!r.length) return '';
     var km = function (v) { return v.vicina ? ' · ' + (v.vicina.stima ? 'zona a ' : 'a ') + distanza(v.vicina.metri) : pos ? ' · distanza non nota' : ''; };
     return '<div class="mda-consigliati"><span class="et">' + (pos ? 'Più utili adesso da dove sei' : data === oggi() ? 'Più utili adesso' : 'Più utili in questo giorno') + '</span>' +
