@@ -1049,13 +1049,17 @@ svg.mappa{width:100%;height:auto;display:block}
       var importo = vuoto(val(riga, 'importo')) ? null : numeroDa(val(riga, 'importo'));
       if (!s) {
         // comune vuoto: si ricava dall'indirizzo quando è scritto dopo il civico
-        var comuneRiga = val(riga, 'comune') || scomponiIndirizzo(val(riga, 'indirizzo')).dopo;
+        // comune vuoto: prima dalle Note Google Maps («…, via Roma 3, Fontebella (XX) - …»), poi da quanto segue il civico
+        var comuneRiga = val(riga, 'comune'), comuneDa = '';
         if (/^null$/i.test(comuneRiga)) comuneRiga = '';
+        if (!comuneRiga && (comuneRiga = comuneDaNote(val(riga, 'noteGoogle')))) comuneDa = 'Note Google Maps';
+        if (!comuneRiga) { comuneRiga = scomponiIndirizzo(val(riga, 'indirizzo')).dopo; if (!/[a-zà-ú]{3}/i.test(comuneRiga) || /^(bis|ter|km|snc|int|sc|piano)(\s|$)/i.test(comuneRiga)) comuneRiga = ''; else comuneDa = 'indirizzo'; }
         s = perId[id] = { id: id, protocollo: prot, locale: nome, organizzatore: val(riga, 'organizzatore'), piva: val(riga, 'piva'), cf: val(riga, 'cf'),
           tipologia: val(riga, 'tipologia'), comune: comuneRiga, indirizzo: senzaNull(val(riga, 'indirizzo')), importo: importo,
           stato: val(riga, 'stato'), accentrata: val(riga, 'accentrata'), atto: val(riga, 'atto'), strumenti: [], mq: val(riga, 'mq'),
           statoGoogle: val(riga, 'statoGoogle'), fascia: val(riga, 'fascia'), chiusura: val(riga, 'chiusura'), noteGoogle: val(riga, 'noteGoogle'),
           circoscrizione: val(riga, 'circoscrizione'), circoscrizioneLocale: val(riga, 'circoscrizioneLocale'), altre: {}, righe: [] };
+        if (comuneDa) s.comuneDa = comuneDa;
         // coordinate calcolate prima (file arricchito): punto di arrivo per navigazione e tratte
         var la = parseFloat(String(val(riga, 'lat')).replace(',', '.')), lo = parseFloat(String(val(riga, 'lon')).replace(',', '.'));
         if (!isNaN(la) && !isNaN(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) { s.lat = la; s.lon = lo; }
@@ -1114,6 +1118,12 @@ svg.mappa{width:100%;height:auto;display:block}
   // Indirizzi del master in due formati: «VIA X - 44 - 00000» oppure «VIA X 44 COMUNE (PR) ...».
   var CIVICO = /^(\d+[a-z]?(\/\w+)?|snc|s\.?n\.?c\.?)$/i;
   /** Scompone un indirizzo in via, civico e (se c'è) comune scritto dopo il civico. */
+  /** Comune scritto nelle Note Google Maps dopo l'indirizzo, con la sigla della provincia: «…, via Roma 3, Fontebella (XX)». */
+  function comuneDaNote(note) {
+    var re = /,\s*([A-Za-zÀ-ú'][A-Za-zÀ-ú' .-]{1,40}?)\s*\(([A-Z]{2})\)/g, m, ultimo = '';
+    while ((m = re.exec(String(note || '')))) if (!/\d/.test(m[1])) ultimo = m[1].trim();
+    return ultimo.toUpperCase();
+  }
   function scomponiIndirizzo(indirizzo) {
     var s = senzaNull(indirizzo);
     var parti = s.split(/\s+-\s+/);
@@ -1453,6 +1463,8 @@ svg.mappa{width:100%;height:auto;display:block}
    * giri: [{ sedi }]; statoDi(sede) -> statoOrario; puntoDi(sede); pos: {lat, lon} | null. -> elenco ordinato.
    */
   function giriConsigliati(giri, pesi, statoDi, puntoDi, pos, raggioKm) {
+    var perComune = {};
+    if (pos) giri.forEach(function (g) { (g.originale || g).sedi.forEach(function (x) { if (x.comune && puntoDi(x)) (perComune[normalizza(x.comune)] = perComune[normalizza(x.comune)] || []).push(x); }); });
     var righe = giri.map(function (g) {
       var aperte = [], plausibili = [], dopo = [];
       g.sedi.forEach(function (x) {
@@ -1462,7 +1474,13 @@ svg.mappa{width:100%;height:auto;display:block}
       var lav = aperte.concat(plausibili);
       var imp = function (l) { return Math.round(l.reduce(function (n, x) { return n + x.schede.reduce(function (m, s) { return m + (s.importo || 0); }, 0); }, 0) * 100) / 100; };
       var vicina = null;
-      if (pos) lav.forEach(function (x) { var p = puntoDi(x); if (p) { var d = distanzaMetri(pos, p); if (!vicina || d < vicina.metri) vicina = { sede: x, metri: d }; } });
+      var cerca = function (sedi, stima) { sedi.forEach(function (x) { var p = puntoDi(x); if (p) { var d = distanzaMetri(pos, p); if (!vicina || d < vicina.metri) vicina = { sede: x, metri: d, stima: stima }; } }); };
+      if (pos) {
+        cerca(lav, '');
+        // tappe lavorabili senza posizione: la zona del giro si stima con le sue altre tappe, poi con le tappe dello stesso comune
+        if (!vicina) cerca((g.originale || g).sedi, 'zona');
+        if (!vicina) lav.forEach(function (x) { cerca(perComune[normalizza(x.comune)] || [], 'comune'); });
+      }
       var perVia = {}; lav.forEach(function (x) { perVia[x.via] = (perVia[x.via] || 0) + 1; });
       var comuni = {}; lav.forEach(function (x) { comuni[normalizza(x.comune)] = 1; });
       return { giro: g, aperte: aperte, plausibili: plausibili, dopo: dopo, lavorabili: lav, importoAperte: imp(aperte), importoPlausibili: imp(plausibili), importo: imp(lav), vicina: vicina,
@@ -1840,7 +1858,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -3492,7 +3510,7 @@ window.avviaMda = function () {
   function consigliati(m, c, giri) {
     var r = R.giriConsigliati(giri, c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos).slice(0, 3);
     if (!r.length) return '';
-    var km = function (v) { return v.vicina ? ' · a ' + (v.vicina.metri < 1000 ? Math.round(v.vicina.metri) + ' m' : (v.vicina.metri / 1000).toFixed(1) + ' km') : ''; };
+    var km = function (v) { return v.vicina ? ' · ' + (v.vicina.stima ? 'zona a ' : 'a ') + distanza(v.vicina.metri) : pos ? ' · distanza non nota' : ''; };
     return '<div class="mda-consigliati"><span class="et">' + (pos ? 'Più utili adesso da dove sei' : data === oggi() ? 'Più utili adesso' : 'Più utili in questo giorno') + '</span>' +
       r.map(function (v, i) {
         return '<button class="mda-consiglio' + (v.giro.key === giroSel ? ' on' : '') + '" data-consiglio="' + esc(v.giro.key) + '"><b>' + (i + 1) + '. ' + esc(v.giro.codice) + ' · ' + esc(v.giro.nome) + '</b><span>' +
@@ -3502,6 +3520,7 @@ window.avviaMda = function () {
       ', orari documentati 20, distanza 10' + (pos ? '; prima i giri con una tappa entro 15 km' : '') + '.</p></div>';
   }
 
+  function distanza(metri) { return metri < 1000 ? Math.round(metri) + ' m' : (metri / 1000).toFixed(1) + ' km'; }
   function tappa(m, x, n) {
     var pd = puntoDi(m), p = pd(x), sg = segnalaDi(m, x.key), s0 = x.schede[0];
     var aperte = x.schede.filter(function (s) { return !esitoDi(m, s.id); });
@@ -3524,7 +3543,7 @@ window.avviaMda = function () {
       (chiusura ? '<span class="badge">Chiuso: ' + esc(chiusura) + '</span>' : '') +
       segn.map(function (t) { return '<span class="badge cr">' + ic('avviso') + esc(t) + '</span>'; }).join('') + '</div>' +
       '<details><summary>Dati fiscali e scheda</summary>' + datiFiscali(x) + '</details>' +
-      (!x.comune || (x.schede[0] || {}).comuneManuale ? '<label class="et mda-comune">Comune' + (x.comune ? ' (scritto da te)' : ' · manca nel master: scrivilo per metterlo nel giro giusto') + '<input data-comune="' + esc(x.schede.map(function (s) { return s.id; }).join(',')) + '" value="' + esc(x.comune || '') + '" placeholder="Es. Fontebella"></label>' : '') +
+      (!x.comune || (x.schede[0] || {}).comuneManuale || (x.schede[0] || {}).comuneDa ? '<label class="et mda-comune">Comune' + ((x.schede[0] || {}).comuneManuale ? ' (scritto da te)' : x.comune ? ' (ricavato da ' + esc(x.schede[0].comuneDa) + ': correggilo se è sbagliato)' : ' · manca nel master: scrivilo per metterlo nel giro giusto') + '<input data-comune="' + esc(x.schede.map(function (s) { return s.id; }).join(',')) + '" value="' + esc(x.comune || '') + '" placeholder="Es. Fontebella"></label>' : '') +
       '<details><summary>Orari e segnalazioni</summary><div class="mda-modifica">' +
       '<label class="et">Fascia oraria<input data-fascia="' + esc(x.key) + '" value="' + esc(fascia || '') + '" placeholder="Es. 18:00-24:00"></label>' +
       '<label class="et">Giorno di chiusura<input data-chiusura="' + esc(x.key) + '" value="' + esc(chiusura || '') + '" placeholder="Es. lunedì"></label>' +
@@ -3769,7 +3788,11 @@ window.avviaMda = function () {
       var r = R.giriConsigliati(giri.map(function (g) { return Object.assign({}, g, { sedi: aperteSedi(g), originale: g }); }), c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos);
       var best = r[0];
       if (best && prima) { giroSel = best.giro.key; }
-      posMsg = 'Posizione attiva (±' + Math.round(pos.acc) + ' m) · ' + (best ? 'giro più utile adesso: ' + best.giro.codice + ' · ' + best.aperte.length + (best.aperte.length === 1 ? ' aperta ora' : ' aperte ora') + (best.vicina ? ', la più vicina a ' + (best.vicina.metri < 1000 ? Math.round(best.vicina.metri) + ' m' : (best.vicina.metri / 1000).toFixed(1) + ' km') : '') : 'nessun locale lavorabile adesso con posizione nota: usa «Segna ingresso con GPS» o la ricerca posizioni');
+      var noti = r.filter(function (v) { return v.vicina; }).length;
+      posMsg = 'Posizione attiva (±' + Math.round(pos.acc) + ' m) · ' + (!best ? 'nessun locale lavorabile adesso' :
+        !noti ? 'nessun giro ha posizioni note: la proposta segue solo orari e valore. Carica il master con le colonne Latitudine e Longitudine o usa la ricerca posizioni' :
+        'giro più utile adesso: ' + best.giro.codice + ' · ' + best.aperte.length + (best.aperte.length === 1 ? ' aperta ora' : ' aperte ora') +
+        (best.vicina ? (best.vicina.stima ? ', zona a ' : ', la più vicina a ') + distanza(best.vicina.metri) : '') + (best.raggiungibile ? '' : ' · nessun giro entro 15 km da te'));
       // solo la prima posizione ridisegna (sceglie il giro); poi si aggiorna la riga della posizione, senza toccare il resto:
       // ridisegnare a ogni segnale GPS chiudeva le sezioni aperte e riportava indietro le barre mentre l'operatore le usava
       var riga = document.querySelector('.mda-gps');
