@@ -993,19 +993,19 @@ svg.mappa{width:100%;height:auto;display:block}
   // colonne del master: nome interno -> titoli riconosciuti (prima uguaglianza esatta, poi parole chiave)
   var COLONNE_MASTER = [
     ['protocollo', ['numero protocollo', 'protocollo scheda', 'n. protocollo'], /^(numero )?protocollo$|protocollo scheda|n\.? ?scheda/],
-    ['atto', ['protocollo atto constatazione', 'protocollo atto'], /atto/],
-    ['organizzatore', ['denominazione organizzatore', 'organizzatore'], /organizzator/],
+    ['atto', ['protocollo atto constatazione', 'protocollo atto', 'numero verbale'], /atto|verbale/],   // «Numero Verbale» nel database dei manager [IPOTESI]
+    ['organizzatore', ['denominazione organizzatore', 'organizzatore', 'ragione sociale'], /organizzator|ragione sociale/],
     ['piva', ['partita iva', 'p.iva', 'p. iva'], /partita iva|p\.? ?iva/],
     ['cf', ['codice fiscale'], /codice fiscale|^c\.?f\.?$/],
     ['tipologia', ['genere locale', 'tipologia', 'tipologia locale'], /genere|tipolog|categori/],
-    ['locale', ['denominazione locale', 'denominazione', 'insegna', 'nome locale'], /denominazione locale|^denominazione$|insegna|nome locale/],
+    ['locale', ['denominazione locale', 'denominazione', 'insegna', 'nome locale', 'denominazione completa'], /denominazione locale|^denominazione( completa)?$|insegna|nome locale/],
     ['circoscrizioneLocale', ['circoscrizione locale'], /circoscrizione locale/],
     ['circoscrizione', ['circoscrizione'], /^circoscrizione$/],
     ['comune', ['comune'], /comune|localit/],
     ['accentrata', ['accentrata', 'accentramento'], /accentrat/],
     ['importo', ['importo sm', 'importo'], /importo/],
     ['indirizzo', ['indirizzo'], /indirizzo|ubicazione/],
-    ['stato', ['stato sm', 'stato scheda', 'stato'], /^stato( sm| scheda)?$/],
+    ['stato', ['stato sm', 'stato scheda', 'stato', 'stato abbonamento'], /^stato( sm| scheda| abbonamento)?$/],
     ['strumento', ['tipo strumento', 'strumento'], /strumento/],
     ['mq', ['mq', 'superficie'], /^mq$|superficie/],
     ['statoGoogle', ['stato google'], /stato google/],
@@ -1069,7 +1069,8 @@ svg.mappa{width:100%;height:auto;display:block}
         if (comuneDa) s.comuneDa = comuneDa;
         // coordinate calcolate prima (file arricchito): punto di arrivo per navigazione e tratte
         var la = parseFloat(String(val(riga, 'lat')).replace(',', '.')), lo = parseFloat(String(val(riga, 'lon')).replace(',', '.'));
-        if (!isNaN(la) && !isNaN(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) { s.lat = la; s.lon = lo; }
+        // 0,0 (o vicino) vuol dire «posizione mancante» nei gestionali: non è un punto vero
+        if (!isNaN(la) && !isNaN(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180 && (Math.abs(la) > 1 || Math.abs(lo) > 1)) { s.lat = la; s.lon = lo; }
         intestazioni.forEach(function (h, j) { if (!noti[j] && h && !vuoto(riga[j])) s.altre[h] = String(riga[j]).trim(); });
         schede.push(s);
       } else {
@@ -3572,7 +3573,16 @@ window.avviaMda = function () {
   function vistaCorrente(m, c) {
     return cerca.trim() ? vistaRicerca(m, c) : tab === 'itin' ? vistaItinerari(m, c) : tab === 'reg' ? vistaRegistro(m, c) : tab === 'val' ? vistaFoglio(m, c, true) : tab === 'tutte' ? vistaFoglio(m, c, false) : vistaAggiungi(m, c);
   }
-  var attesaRicerca = null, schedaAperta = null;
+  var attesaRicerca = null, schedaAperta = null, filtroRicerca = null;
+  /** Insiemi della ricerca (scelta 17.1): si parte da quello degli itinerari; «Da accertare» con la lista ufficiale = solo la lista (18.1). */
+  var INSIEMI_RICERCA = [['da', 'Da accertare'], ['validate', 'Validate'], ['pagate', 'Pagate'], ['tutte', 'Tutte']];
+  function nellInsiemeRicerca(m, s, k) {
+    if (k === 'tutte') return true;
+    if (k === 'validate') return /^validat/i.test(String(s.stato || '').trim());
+    if (k === 'pagate') return /^pagat/i.test(String(s.stato || '').trim());
+    if (m.manuali.indexOf(s) >= 0) return true;
+    return R.inItinerario(s, null) && (!m.lista || s.inLista);
+  }
   /** La sede (locale a un indirizzo) di una scheda: quella del giro, se è in un itinerario, altrimenti ricostruita dal master. */
   function sedeCercata(m, c, key) {
     var conLei = c.giri.filter(function (x) { return x.sedi.some(function (y) { return y.key === key; }); });
@@ -3879,6 +3889,11 @@ window.avviaMda = function () {
       var testo = R.normalizza([s.locale, s.comune, s.indirizzo, s.protocollo, s.organizzatore, s.tipologia].join(' '));
       return parole.every(function (w) { return testo.indexOf(w) >= 0; });
     });
+    var scelto = filtroRicerca || insieme(m);
+    var quante = {}; INSIEMI_RICERCA.forEach(function (x) { quante[x[0]] = tutte.filter(function (s) { return nellInsiemeRicerca(m, s, x[0]); }).length; });
+    var pulsanti = '<div class="seg mda-insiemi mda-filtro-ricerca">' + INSIEMI_RICERCA.map(function (x) {
+      return '<button data-filtro-ricerca="' + x[0] + '" class="' + (scelto === x[0] ? 'on' : '') + '"><b>' + quante[x[0]] + '</b>' + x[1] + '</button>'; }).join('') + '</div>';
+    tutte = tutte.filter(function (s) { return nellInsiemeRicerca(m, s, scelto); });
     var trovate = tutte.slice(0, 40), pd = puntoDi(m);
     if (schedaAperta) {
       var sc = sedeCercata(m, c, schedaAperta);
@@ -3887,8 +3902,8 @@ window.avviaMda = function () {
         '<p class="sub">' + (sc.giro ? 'È nel giro ' + esc(sc.giro.codice + ' · ' + sc.giro.nome) + '.' : 'Non è in nessun itinerario: ' + esc(R.statoScheda(sc.sede.schede[0]).etichetta.toLowerCase()) + (R.inItinerario(sc.sede.schede[0], null) ? ' (tipologia esclusa o filtro attivo)' : ' (negli itinerari solo Validata, non accentrata, senza atto)') + '.') + '</p></section>' +
         tappa(m, sc.sede, -1);
     }
-    return '<section class="foglio"><h2>Ricerca · ' + esc(cerca.trim()) + '</h2><p class="sub">' +
-      (tutte.length ? tutte.length + (tutte.length === 1 ? ' scheda trovata' : ' schede trovate') + (tutte.length > 40 ? ', mostro le prime 40: aggiungi una parola' : '') : 'Nessuna scheda: prova con meno lettere o un\'altra parola') +
+    return '<section class="foglio"><h2>Ricerca · ' + esc(cerca.trim()) + '</h2>' + pulsanti + '<p class="sub">' +
+      (tutte.length ? tutte.length + (tutte.length === 1 ? ' scheda trovata' : ' schede trovate') + (tutte.length > 40 ? ', mostro le prime 40: aggiungi una parola' : '') : 'Nessuna scheda in «' + INSIEMI_RICERCA.filter(function (x) { return x[0] === scelto; })[0][1] + '»: prova «Tutte» o un\'altra parola') +
       ' · <button class="link" id="cerca-via">Cancella ricerca</button></p></section>' +
       trovate.map(function (s) {
         var st = R.statoScheda(s), e = esitoDi(m, s.id), g = c.giri.filter(function (x) { return x.schede.indexOf(s) >= 0; })[0];
@@ -4329,6 +4344,7 @@ window.avviaMda = function () {
     }
     if (b.id === 'togli-mio') { m.mioGiro = null; m.mioBozza = { comuni: [], generi: [], esclusi: {} }; giroSel = null; salva(); render(); toast('Il mio giro eliminato'); return; }
     if (b.dataset.esito) { apriEsito(b.dataset.esito); return; }
+    if (b.dataset.filtroRicerca) { filtroRicerca = b.dataset.filtroRicerca; schedaAperta = null; var vr = document.getElementById('mda-vista'); if (vr) vr.innerHTML = vistaCorrente(m, calcola(m)); return; }
     if (b.dataset.apriSede) { schedaAperta = b.dataset.apriSede; render(); var vv = document.getElementById('mda-vista'); if (vv) vv.scrollIntoView(); return; }
     if (b.hasAttribute('data-chiudi-scheda')) { schedaAperta = null; render(); return; }
     if (b.dataset.vaiGiro) { vaiAlGiro(b.dataset.vaiGiro); return; }
