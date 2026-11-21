@@ -361,7 +361,10 @@ nav button.segnala{color:var(--ambra)}
 .mda-tratte{display:flex;flex-direction:column;gap:6px;margin-top:8px}
 .mda-chiuse{display:flex;gap:6px;color:var(--ambra);margin-top:8px}.mda-chiuse .ic{width:16px;height:16px;flex:none}
 .mda-tappa{display:grid;grid-template-columns:44px minmax(0,1fr);gap:10px;padding:12px}
-.mda-tappa.chiusa{opacity:.6}
+.mda-tappa.chiusa{box-shadow:inset 3px 0 0 var(--ambra)}
+.mda-verifica{display:flex;gap:6px;align-items:center;margin:4px 0;color:var(--ambra);font-weight:600;font-size:14px}.mda-verifica .ic{width:16px;height:16px;flex:none}
+button.mda-trovata{width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer;border:1px solid var(--bordo)}
+.mda-apri{font-size:13px;color:var(--tenue)}.mda-apri b{color:var(--blu)}
 .mda-n{display:flex;flex-direction:column;align-items:center;gap:2px;border-right:1px solid var(--bordo)}.mda-n span{font:600 9px/1 var(--mono);text-transform:uppercase;color:var(--spento)}.mda-n b{font:600 20px/1 var(--display);color:var(--turchese)}
 .mda-corpo{display:flex;flex-direction:column;gap:8px;min-width:0}
 .mda-nome{font:600 17px/1.2 var(--display);margin:0;letter-spacing:0;text-transform:none;color:var(--chiaro);overflow-wrap:anywhere}
@@ -1349,7 +1352,8 @@ svg.mappa{width:100%;height:auto;display:block}
     return { tratte: tratte, escluse: escluse };
   }
 
-  var ESITI_MDA = ['AC', 'Apparecchi rimossi', 'Locale chiuso T', 'Locale chiuso D', 'NA'];
+  // «Musica non tutelata» (decisione del proponente, 21/11/2026): chiude la scheda; la nota su cosa diffonde è consigliata, non obbligatoria [IPOTESI]
+  var ESITI_MDA = ['AC', 'Apparecchi rimossi', 'Locale chiuso T', 'Locale chiuso D', 'NA', 'Musica non tutelata'];
   /** Un esito vuole una data valida; «Senza esito» (vuoto) riapre la scheda. */
   function validaEsitoMda(esito, data) {
     if (!esito) return si();
@@ -3409,7 +3413,18 @@ window.avviaMda = function () {
   function vistaCorrente(m, c) {
     return cerca.trim() ? vistaRicerca(m, c) : tab === 'itin' ? vistaItinerari(m, c) : tab === 'reg' ? vistaRegistro(m, c) : tab === 'val' ? vistaFoglio(m, c, true) : tab === 'tutte' ? vistaFoglio(m, c, false) : vistaAggiungi(m, c);
   }
-  var attesaRicerca = null;
+  var attesaRicerca = null, schedaAperta = null;
+  /** La sede (locale a un indirizzo) di una scheda: quella del giro, se è in un itinerario, altrimenti ricostruita dal master. */
+  function sedeCercata(m, c, key) {
+    var g = c.giri.filter(function (x) { return x.sedi.some(function (y) { return y.key === key; }); })[0];
+    if (g) return { sede: g.sedi.filter(function (y) { return y.key === key; })[0], giro: g };
+    var schede = tutteLeSchede(m).filter(function (s) { return R.sedeDi(s) === key; }), s0 = schede[0];
+    return s0 ? { sede: { key: key, nome: s0.locale, comune: s0.comune, indirizzo: s0.indirizzo, tipologia: s0.tipologia, via: R.viaDi(s0.indirizzo), schede: schede }, giro: null } : null;
+  }
+  function vaiAlGiro(key) {
+    giroSel = key; tab = 'itin'; cerca = ''; schedaAperta = null; render();
+    var t = document.querySelector('.mda-giro'); if (t) t.scrollIntoView();
+  }
   function render() {
     var m = M();
     document.title = 'IRIDE · MDA' + (m ? ' · ' + m.nome : '');
@@ -3433,7 +3448,7 @@ window.avviaMda = function () {
     // il campo di ricerca non si ridisegna mai mentre si scrive: prima ogni lettera rifaceva la pagina, toglieva lo spazio
     // finale e interrompeva la tastiera del telefono. Si aggiornano solo i risultati, un attimo dopo l'ultima lettera.
     if (ci) ci.addEventListener('input', function () {
-      cerca = ci.value; clearTimeout(attesaRicerca);
+      cerca = ci.value; schedaAperta = null; clearTimeout(attesaRicerca);
       attesaRicerca = setTimeout(function () { var v = document.getElementById('mda-vista'), m = M(); if (v && m) v.innerHTML = vistaCorrente(m, calcola(m)); }, 200);
     });
   }
@@ -3495,12 +3510,14 @@ window.avviaMda = function () {
       ' + facilità 20×' + g.componenti.F.toFixed(2) + ' + spostamenti 10×' + g.componenti.E.toFixed(2) + '. Schede aperte nella mandataria: ' + c.aperte.length + ' su ' + (m.N || c.ammesse.length) +
       ' iniziali: più si riducono, più conta il valore (dal 10% residuo in giù: densità 20, valore 50).</p></details></section>';
     // tappe
-    var apertaOggi = function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }) && !chiusaOggi(m, x); };
+    // decisione del proponente (21/11/2026): anche i locali chiusi secondo Google, nel giorno di chiusura o segnalati chiusi
+    // restano nel percorso al loro posto, con l'avviso «Verifica sul posto»: la verifica la fa l'accertatore sul campo
+    var apertaOggi = function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); };
     var aperteSedi = g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); });
     // giro di giornata: con meno di 6 tappe lavorabili si aggiungono le più vicine degli altri itinerari
     var aggiunte = R.completaGiro(aperteSedi.filter(apertaOggi), giri.filter(function (x) { return x !== g; }).map(function (x) { return { giro: x, sedi: x.sedi.filter(apertaOggi) }; }), 6, pd);
     var ordinate = R.ordinaTappe(aperteSedi.concat(aggiunte), pos, pd);
-    var lavorabili = ordinate.filter(function (x) { return !chiusaOggi(m, x); }), chiuse = ordinate.filter(function (x) { return chiusaOggi(m, x); });
+    var lavorabili = ordinate, daVerificare = ordinate.filter(function (x) { return chiusaOggi(m, x); });
     var tr = R.tratteMaps(lavorabili, pd);
     h += '<section class="foglio"><h3>Tappe da controllare</h3>';
     if (aggiunte.length) h += '<p class="sub mda-pos">In questo itinerario restano poche tappe: per arrivare a 6 ho aggiunto le ' + aggiunte.length + ' più vicine di ' +
@@ -3511,12 +3528,10 @@ window.avviaMda = function () {
     if (senzaOrari.length) h += '<button class="az" id="gemini-giro">Chiedi a Gemini gli orari mancanti (' + senzaOrari.length + ')</button>';
     perGemini = senzaOrari;
     if (tr.escluse.length) h += '<p class="sub">Senza destinazione utilizzabile (' + tr.escluse.length + '): ' + tr.escluse.map(function (n) { return esc(lavorabili[n].nome); }).join(', ') + '. Usa «Segna ingresso con GPS» quando sei sul posto.</p>';
-    if (chiuse.length) h += '<p class="sub mda-chiuse">' + ic('avviso') + ' Chiusi nel giorno di uscita o segnalati chiusi (' + chiuse.length + '): ' + chiuse.map(function (x) { return esc(x.nome); }).join(', ') + '. Fuori dalle tratte di oggi, restano da lavorare; per includerli apri «Orari e segnalazioni» e spunta «Verifica sul posto oggi».</p>';
+    if (daVerificare.length) h += '<p class="sub mda-chiuse">' + ic('avviso') + ' Da verificare sul posto (' + daVerificare.length + '): risultano chiusi secondo Google, nel giorno di chiusura o segnalati chiusi. Sono nel percorso al loro posto, con l\'avviso sulla tappa.</p>';
     h += '</section>';
     h += viciniHtml(m, c, g);
     h += lavorabili.map(function (x, i) { return tappa(m, x, i); }).join('');
-    if (chiuse.length) h += '<section class="foglio"><h3>Fuori dalle tratte di oggi · ' + chiuse.length + '</h3><p class="sub">Chiusi secondo Google Maps (anche «Chiuso temporaneamente») o segnalati chiusi. Restano da lavorare: se passi davanti e sono aperti, premi «Includi oggi».</p></section>' +
-      chiuse.map(function (x) { return tappa(m, x, -1); }).join('');
     return h;
   }
   /** Con la posizione attiva: i locali ancora da lavorare entro 500 m, di qualsiasi giro, anche quelli fuori dalle tratte di oggi. */
@@ -3537,7 +3552,7 @@ window.avviaMda = function () {
     return '<section class="foglio"><h3>Qui vicino · entro 500 m</h3><p class="sub">Locali ancora da lavorare vicino a te, di qualsiasi giro.</p>' + righe.slice(0, 8).map(function (r) {
       var chiusa = chiusaOggi(m, r.x);
       return '<div class="mda-scheda"><span><b>' + esc(r.x.nome) + '</b> · ' + distanza(r.d) + '<br><i>' + (r.g === gSel ? 'in questo giro' : 'giro ' + esc(r.g.codice)) +
-        (chiusa ? ' · fuori dalle tratte di oggi (' + esc(r.x.schede[0].statoGoogle || 'chiuso') + ')' : '') + '</i></span>' +
+        (chiusa ? ' · da verificare (' + esc(r.x.schede[0].statoGoogle || 'chiuso') + ')' : '') + '</i></span>' +
         '<button class="az forte" data-esito="' + esc(r.s.id) + '">Esito</button></div>';
     }).join('') + '</section>';
   }
@@ -3574,6 +3589,7 @@ window.avviaMda = function () {
     var h = '<article class="foglio mda-tappa' + (chiusaOggi(m, x) ? ' chiusa' : '') + '" data-sede="' + esc(x.key) + '"><div class="mda-n"><span>Tappa</span><b>' + (n >= 0 ? n + 1 : '—') + '</b></div><div class="mda-corpo">' +
       '<div class="et">' + (x.daGiro ? 'da ' + esc(x.daGiro.codice) + ' · ' : '') + esc(x.comune || 'Comune non indicato') + ' · ' + esc(x.tipologia || 'tipologia n.d.') + (dist != null ? ' · ' + (dist < 1000 ? Math.round(dist) + ' m' : (dist / 1000).toFixed(1) + ' km') : '') + '</div>' +
       '<h3 class="mda-nome">' + esc(x.nome) + '</h3><p class="mda-ind">' + esc(x.indirizzo) + '</p>' +
+      (chiusaOggi(m, x) ? '<p class="mda-verifica">' + ic('avviso') + 'Verifica sul posto: ' + esc(sg.chiusoOggi === data ? 'segnalato chiuso oggi' : s0.statoGoogle && /chius/i.test(s0.statoGoogle) ? 'Google dice «' + s0.statoGoogle + '»' : 'oggi è il giorno di chiusura') + '</p>' : '') +
       '<div class="badges">' + (function () { var s = statoDi(m, x); return '<span class="badge mda-orario-' + s.stato + '">' + esc(testoStato(s)) + '</span>'; })() +
       (insieme(m) !== 'da' ? x.schede.map(function (s) { var st = R.statoScheda(s); return '<span class="badge mda-' + st.colore + '">' + esc(st.etichetta) + '</span>'; }).join('') : '') +
       (fascia ? '<span class="badge">Fascia: ' + esc(fascia) + (fo.fonte && fo.fonte !== 'master' ? ' · ' + esc(fo.fonte) : '') + '</span>' : '<span class="badge mda-verif">Apertura da verificare</span>') +
@@ -3591,7 +3607,6 @@ window.avviaMda = function () {
       (fonteOrari(m, x).fonte ? '<p class="sub">Orari: ' + esc(fonteOrari(m, x).fonte) + '</p>' : '') +
       '<button class="az" data-gemini="' + esc(x.key) + '">Chiedi a Gemini orari e chiusura</button></div></details>' +
       '<div class="mda-nav"><a class="az" target="_blank" rel="noopener" href="' + esc(naviga) + '">' + ic('naviga') + (p ? 'Naviga alle coordinate' : 'Naviga per indirizzo') + '</a>' +
-      (chiusaOggi(m, x) ? '<button class="az" data-includi-ora="' + esc(x.key) + '">Includi oggi</button>' : '') +
       '<button class="link" data-ingresso="' + esc(x.key) + '">Segna ingresso con GPS</button>' +
       '<a class="link" target="_blank" rel="noopener" href="' + esc(cercaOrari(x)) + '">Cerca orari sul web</a></div>' +
       '<p class="sub">' + (m.pin[x.key] ? 'Ingresso segnato con GPS (±' + Math.round(m.pin[x.key].acc || 0) + ' m)' : m.geo[x.key] ? (m.geo[x.key].livello === 'file' ? 'Posizione dal file del master' : 'Posizione da OpenStreetMap · ' + (m.geo[x.key].livello === 'via' ? 'riferimento della sola via' : 'civico')) : 'Indirizzo del master · controlla il punto in Maps') + '</p>' +
@@ -3660,6 +3675,13 @@ window.avviaMda = function () {
       return parole.every(function (w) { return testo.indexOf(w) >= 0; });
     });
     var trovate = tutte.slice(0, 40), pd = puntoDi(m);
+    if (schedaAperta) {
+      var sc = sedeCercata(m, c, schedaAperta);
+      if (sc) return '<section class="foglio"><div class="mda-nav"><button class="az" data-chiudi-scheda>← Risultati della ricerca</button>' +
+        (sc.giro ? '<button class="az forte" data-vai-giro="' + esc(sc.giro.key) + '">Vai al giro ' + esc(sc.giro.codice) + '</button>' : '') + '</div>' +
+        '<p class="sub">' + (sc.giro ? 'È nel giro ' + esc(sc.giro.codice + ' · ' + sc.giro.nome) + '.' : 'Non è in nessun itinerario: ' + esc(R.statoScheda(sc.sede.schede[0]).etichetta.toLowerCase()) + (R.inItinerario(sc.sede.schede[0], null) ? ' (tipologia esclusa o filtro attivo)' : ' (negli itinerari solo Validata, non accentrata, senza atto)') + '.') + '</p></section>' +
+        tappa(m, sc.sede, -1);
+    }
     return '<section class="foglio"><h2>Ricerca · ' + esc(cerca.trim()) + '</h2><p class="sub">' +
       (tutte.length ? tutte.length + (tutte.length === 1 ? ' scheda trovata' : ' schede trovate') + (tutte.length > 40 ? ', mostro le prime 40: aggiungi una parola' : '') : 'Nessuna scheda: prova con meno lettere o un\'altra parola') +
       ' · <button class="link" id="cerca-via">Cancella ricerca</button></p></section>' +
@@ -3667,18 +3689,14 @@ window.avviaMda = function () {
         var st = R.statoScheda(s), e = esitoDi(m, s.id), g = c.giri.filter(function (x) { return x.schede.indexOf(s) >= 0; })[0];
         var sede = g && g.sedi.filter(function (x) { return x.schede.indexOf(s) >= 0; })[0], p = sede ? pd(sede) : (s.lat != null ? s : null);
         var dist = pos && p ? R.distanzaMetri(pos, p) : null, chiusa = sede && chiusaOggi(m, sede);
-        var dest = p ? p.lat.toFixed(6) + ',' + p.lon.toFixed(6) : R.indirizzoPulito(s.indirizzo, s.comune);
         var fuori = g ? '' : !R.inItinerario(s, null) ? 'Fuori dagli itinerari: ' + st.etichetta.toLowerCase() : tipEscluse(m)[tipologiaDi(s)] ? 'Fuori dagli itinerari: tipologia esclusa' : 'Fuori dagli itinerari';
-        return '<article class="foglio mda-trovata"><div class="et">' + esc(s.comune || 'Comune non indicato') + ' · ' + esc(s.tipologia || 'tipologia n.d.') + (dist != null ? ' · ' + distanza(dist) : '') + '</div>' +
+        return '<button type="button" class="foglio mda-trovata" data-apri-sede="' + esc(R.sedeDi(s)) + '"><div class="et">' + esc(s.comune || 'Comune non indicato') + ' · ' + esc(s.tipologia || 'tipologia n.d.') + (dist != null ? ' · ' + distanza(dist) : '') + '</div>' +
           '<h3 class="mda-nome">' + esc(s.locale) + '</h3><p class="mda-ind">' + esc(s.indirizzo) + '</p>' +
           '<div class="badges"><span class="badge mda-' + st.colore + '">' + esc(st.etichetta) + '</span><span class="badge">' + euro(s.importo) + '</span>' +
           (g ? '<span class="badge">Giro ' + esc(g.codice) + '</span>' : '<span class="badge">' + esc(fuori) + '</span>') +
-          (chiusa ? '<span class="badge cr">' + ic('avviso') + 'Fuori dalle tratte di oggi: ' + esc(s.statoGoogle || 'chiuso nel giorno') + '</span>' : '') +
+          (chiusa ? '<span class="badge cr">' + ic('avviso') + 'Da verificare: ' + esc(s.statoGoogle || 'chiuso nel giorno') + '</span>' : '') +
           (e ? '<span class="badge mda-verde">' + esc(e.esito + ' · ' + e.data) + '</span>' : '') + '</div>' +
-          '<p class="sub">Protocollo ' + esc(s.protocollo || s.id) + '</p>' +
-          '<div class="mda-nav"><button class="az' + (e ? '' : ' forte') + '" data-esito="' + esc(s.id) + '">' + (e ? 'Modifica esito' : 'Registra esito') + '</button>' +
-          '<a class="az" target="_blank" rel="noopener" href="' + esc('https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(dest) + '&travelmode=driving') + '">' + ic('naviga') + 'Naviga</a>' +
-          (chiusa ? '<button class="link" data-includi-ora="' + esc(sede.key) + '">Includi oggi: verifico sul posto</button>' : '') + '</div></article>';
+          '<span class="mda-apri">Protocollo ' + esc(s.protocollo || s.id) + ' · <b>Apri la scheda completa ›</b></span></button>';
       }).join('');
   }
 
@@ -3690,7 +3708,7 @@ window.avviaMda = function () {
         return '<label class="et">' + f[1] + '<input name="' + f[0] + '"' + (/\*/.test(f[1]) ? ' required' : '') + '></label>'; }).join('') +
       '<label class="et">Esito<select name="esito"><option value="">Senza esito</option>' + ESITI.map(function (e) { return '<option>' + e + '</option>'; }).join('') + '</select></label>' +
       '<label class="et">Data sopralluogo<input type="date" name="data" value="' + data + '"></label>' +
-      '<label class="et">Note<input name="note"></label><button class="save" type="submit">Salva locale</button></form></section>';
+      '<label class="et">Note<input name="note" placeholder="Per «Musica non tutelata»: cosa diffonde (radio, piattaforma senza diritti…)"></label><button class="save" type="submit">Salva locale</button></form></section>';
   }
 
   // ------------------------------------------------------------ esito
@@ -3702,7 +3720,7 @@ window.avviaMda = function () {
       '<h2>' + esc(s.locale) + '</h2><p class="sub">' + esc(s.comune || 'Comune non indicato') + ' · ' + esc(s.indirizzo) + ' · ' + esc(s.protocollo || s.id) + ' · ' + euro(s.importo) + '</p>' +
       '<div class="two"><label>Esito<select name="esito"><option value="">Senza esito</option>' + ESITI.map(function (x) { return '<option' + (x === e.esito ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select></label>' +
       '<label>Data sopralluogo<input type="date" name="data" value="' + esc(e.data || data) + '"></label></div>' +
-      '<label>Note<input name="note" value="' + esc(e.note || '') + '"></label><p class="dup" data-err hidden></p>' +
+      '<label>Note<input name="note" value="' + esc(e.note || '') + '" placeholder="Per «Musica non tutelata»: cosa diffonde (radio, piattaforma senza diritti…)"></label><p class="dup" data-err hidden></p>' +
       '<button class="save" type="submit">Salva controllo</button></form>';
     document.body.appendChild(o);
     o.addEventListener('click', function (ev) { if (ev.target === o || ev.target.closest('[data-close]')) o.remove(); });
@@ -4069,13 +4087,16 @@ window.avviaMda = function () {
     }
     if (!m) return;
     if (b.dataset.tab) { tab = b.dataset.tab; cerca = ''; render(); window.scrollTo(0, 0); return; }
-    if (b.id === 'cerca-via') { cerca = ''; render(); return; }
+    if (b.id === 'cerca-via') { cerca = ''; schedaAperta = null; render(); return; }
     if (b.id === 'pos') { usaPosizione(); return; }
     if (b.id === 'programma') { m.programma[data] = giroSel; salva(); render(); toast('Giro programmato per il ' + data); return; }
     if (b.dataset.consiglio) { giroSel = b.dataset.consiglio; render(); return; }
     if (b.dataset.insieme) { m.insieme = b.dataset.insieme; giroSel = null; salva(); render(); return; }
     if (b.id === 'tendina-tip') { tendinaAperta = !tendinaAperta; render(); return; }
     if (b.dataset.esito) { apriEsito(b.dataset.esito); return; }
+    if (b.dataset.apriSede) { schedaAperta = b.dataset.apriSede; render(); var vv = document.getElementById('mda-vista'); if (vv) vv.scrollIntoView(); return; }
+    if (b.hasAttribute('data-chiudi-scheda')) { schedaAperta = null; render(); return; }
+    if (b.dataset.vaiGiro) { vaiAlGiro(b.dataset.vaiGiro); return; }
     if (b.dataset.includiOra) { (m.segnala[b.dataset.includiOra] = m.segnala[b.dataset.includiOra] || {}).includi = data; salva(); render(); toast('Incluso nel giro di oggi come verifica sul posto'); return; }
     if (b.dataset.ingresso) { segnaIngresso(b.dataset.ingresso); return; }
     if (b.id === 'geo-via') { cercaPosizioni(); return; }
