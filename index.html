@@ -1353,7 +1353,8 @@ svg.mappa{width:100%;height:auto;display:block}
   }
 
   // «Musica non tutelata» (decisione del proponente, 21/11/2026): chiude la scheda; la nota su cosa diffonde è consigliata, non obbligatoria [IPOTESI]
-  var ESITI_MDA = ['AC', 'Apparecchi rimossi', 'Locale chiuso T', 'Locale chiuso D', 'NA', 'Musica non tutelata'];
+  // «Locale non visitato» (decisione del proponente, 21/11/2026): chiude la scheda come gli altri esiti
+  var ESITI_MDA = ['AC', 'Apparecchi rimossi', 'Locale chiuso T', 'Locale chiuso D', 'NA', 'Musica non tutelata', 'Locale non visitato'];
   /** Un esito vuole una data valida; «Senza esito» (vuoto) riapre la scheda. */
   function validaEsitoMda(esito, data) {
     if (!esito) return si();
@@ -1510,21 +1511,118 @@ svg.mappa{width:100%;height:auto;display:block}
    * del master per comune, nome e indirizzo (non per protocollo: nei file intermedi i protocolli possono aver perso cifre).
    * -> { perSede: { sedeKey: { fascia, chiusura, statoGoogle, noteGoogle, lat, lon } }, righe, abbinate, campi }
    */
+  // titoli in più accettati nei documenti di supporto (file di altre app, elenchi fatti a mano)
+  var SINONIMI_SUPPORTO = [['locale', /^(nome|locale|esercizio|attivit|ragione sociale|nome attivit)/], ['comune', /citt|paese|^comune/], ['indirizzo', /^via|indirizz/]];
+  // riconoscimento dal contenuto, per le colonne senza un titolo riconosciuto (o senza titolo)
+  var CONTENUTI_SUPPORTO = [
+    ['piva', function (v) { return /^(it)?\d{11}$/i.test(v.replace(/\s/g, '')); }],
+    ['lat', function (v) { var x = parseFloat(v.replace(',', '.')); return /\d[.,]\d{3,}/.test(v) && x >= 35 && x <= 48; }],
+    ['lon', function (v) { var x = parseFloat(v.replace(',', '.')); return /\d[.,]\d{3,}/.test(v) && x >= 6 && x <= 19; }],
+    ['fascia', function (v) { return /\d{1,2}[:.]\d{2}\s*[-–]\s*\d{1,2}[:.]\d{2}/.test(v); }],
+    ['statoGoogle', function (v) { return /^(aperto|chiuso)/i.test(v) && v.length < 40; }],
+    ['chiusura', function (v) { return /(luned|marted|mercoled|gioved|venerd|sabato|domenica|nessun)/i.test(v) && !/\d{1,2}[:.]\d{2}/.test(v); }]
+  ];
+  /**
+   * Colonne di un documento di supporto, senza chiedere nulla all'operatore: prima dai titoli (come il master, più
+   * qualche sinonimo), poi dal contenuto (orari, coordinate, partite IVA, stato, giorno di chiusura).
+   * -> { mappa: campo -> indice di colonna, daTitolo: quante riconosciute dal titolo }
+   */
+  function riconosciColonneSupporto(intestazioni, righe) {
+    var mappa = riconosciColonneMaster(intestazioni).mappa, usate = {};
+    var n = intestazioni.map(function (h) { return String(h || '').toLowerCase().replace(/\s+/g, ' ').trim(); });
+    SINONIMI_SUPPORTO.forEach(function (c) {
+      if (mappa[c[0]] != null) return;
+      Object.keys(mappa).forEach(function (k) { usate[mappa[k]] = 1; });
+      for (var i = 0; i < n.length; i++) if (!usate[i] && c[1].test(n[i])) { mappa[c[0]] = i; break; }
+    });
+    Object.keys(mappa).forEach(function (k) { usate[mappa[k]] = 1; });
+    var daTitolo = Object.keys(mappa).length;
+    // senza riga dei titoli anche la prima riga è un dato e va guardata
+    var campione = (daTitolo < 2 ? [intestazioni].concat(righe) : righe).slice(0, 300), colonne = campione.reduce(function (x, r) { return Math.max(x, r.length); }, intestazioni.length);
+    CONTENUTI_SUPPORTO.forEach(function (c) {
+      if (mappa[c[0]] != null) return;
+      var meglio = null;
+      for (var i = 0; i < colonne; i++) {
+        if (usate[i]) continue;
+        var v = campione.map(function (r) { return String(r[i] == null ? '' : r[i]).trim(); }).filter(Boolean);
+        var q = v.length ? v.filter(c[1]).length / v.length : 0;
+        if (q >= 0.6 && (!meglio || q > meglio.q)) meglio = { i: i, q: q };
+      }
+      if (meglio) { mappa[c[0]] = meglio.i; usate[meglio.i] = 1; }
+    });
+    return { mappa: mappa, daTitolo: daTitolo };
+  }
+
+  /**
+   * Da un documento di supporto (un altro master, l'Excel di un'altra app, un elenco) i dati utili al controllo,
+   * abbinati alle sedi del master solo quando l'abbinamento è sicuro, in quest'ordine: protocollo, partita IVA,
+   * nome + comune, nome + via (decisione del proponente, 21/11/2026). Se un criterio indica più locali, si passa al
+   * successivo; se nessuno è sicuro, la riga è scartata e contata.
+   * -> { ok, motivo, perSede: { sedeKey: { fascia, chiusura, statoGoogle, noteGoogle, lat, lon } }, righe, abbinate, scartate, perMetodo, campi, colonne }
+   */
   function datiDiSupporto(schedeMaster, intestazioni, righe) {
-    var sup = leggiMaster(intestazioni, righe);
-    if (!sup.ok) return { ok: false, mancanti: sup.mancanti, perSede: {}, righe: righe.length, abbinate: 0, campi: [] };
-    var sediMaster = {}; schedeMaster.forEach(function (s) { sediMaster[sedeDi(s)] = 1; });
-    var perSede = {}, campi = {}, abbinate = 0;
-    sup.schede.forEach(function (s) {
+    var ric = riconosciColonneSupporto(intestazioni, righe), m = ric.mappa;
+    if (ric.daTitolo < 2) righe = [intestazioni].concat(righe);          // senza riga dei titoli: anche la prima riga è un dato
+    var DATI = ['fascia', 'chiusura', 'statoGoogle', 'noteGoogle', 'lat'];
+    var colonne = Object.keys(m);
+    if (m.protocollo == null && m.piva == null && m.locale == null) return { ok: false, motivo: 'non trovo una colonna per riconoscere i locali (protocollo, partita IVA o nome)', perSede: {}, righe: righe.length, abbinate: 0, scartate: 0, campi: [], colonne: colonne };
+    if (!DATI.some(function (c) { return m[c] != null; })) return { ok: false, motivo: 'non trovo dati utili (orari, giorno di chiusura, stato, note o posizioni)', perSede: {}, righe: righe.length, abbinate: 0, scartate: 0, campi: [], colonne: colonne };
+    var val = function (riga, c) { return m[c] != null ? String(riga[m[c]] == null ? '' : riga[m[c]]).trim() : ''; };
+    var indice = {}, aggiungi = function (tipo, chiave, sede) { if (!chiave) return; var k = tipo + '#' + chiave; (indice[k] = indice[k] || {})[sede] = 1; };
+    var cifre = function (v) { return String(v || '').replace(/\D/g, ''); };
+    schedeMaster.forEach(function (s) {
       var k = sedeDi(s);
-      if (!sediMaster[k]) return;
-      var d = perSede[k] || (perSede[k] = {});
-      ['fascia', 'chiusura', 'statoGoogle', 'noteGoogle'].forEach(function (c) { if (!vuoto(s[c]) && !d[c]) { d[c] = s[c]; campi[c] = 1; } });
-      if (s.lat != null && d.lat == null) { d.lat = s.lat; d.lon = s.lon; campi.posizione = 1; }
-      abbinate++;
+      aggiungi('p', String(s.protocollo || '').trim(), k);
+      if (cifre(s.piva).length === 11) aggiungi('i', cifre(s.piva), k);
+      if (normalizza(s.locale)) { aggiungi('nc', normalizza(s.locale) + '|' + normalizza(s.comune), k); aggiungi('nv', normalizza(s.locale) + '|' + viaDi(s.indirizzo), k); }
+    });
+    var unica = function (tipo, chiave) { var o = chiave && indice[tipo + '#' + chiave]; var ks = o ? Object.keys(o) : []; return ks.length === 1 ? ks[0] : ks.length > 1 ? 'piu' : null; };
+    var perSede = {}, campi = {}, abbinate = 0, scartate = 0, lette = 0, perMetodo = { protocollo: 0, piva: 0, nomeComune: 0, nomeVia: 0 };
+    righe.forEach(function (riga) {
+      if (!riga.some(function (x) { return String(x == null ? '' : x).trim(); })) return;
+      lette++;
+      var nome = normalizza(val(riga, 'locale')), prove = [
+        ['protocollo', unica('p', val(riga, 'protocollo'))],
+        ['piva', cifre(val(riga, 'piva')).length === 11 ? unica('i', cifre(val(riga, 'piva'))) : null],
+        ['nomeComune', nome && val(riga, 'comune') ? unica('nc', nome + '|' + normalizza(val(riga, 'comune'))) : null],
+        ['nomeVia', nome && val(riga, 'indirizzo') ? unica('nv', nome + '|' + viaDi(val(riga, 'indirizzo'))) : null]
+      ];
+      var trovata = prove.filter(function (p) { return p[1] && p[1] !== 'piu'; })[0];
+      if (!trovata) { scartate++; return; }
+      var k = trovata[1], d = perSede[k] || (perSede[k] = {});
+      perMetodo[trovata[0]]++; abbinate++;
+      ['fascia', 'chiusura', 'statoGoogle', 'noteGoogle'].forEach(function (c) { var v = val(riga, c); if (!vuoto(v) && !d[c]) { d[c] = v; campi[c] = 1; } });
+      var la = parseFloat(val(riga, 'lat').replace(',', '.')), lo = parseFloat(val(riga, 'lon').replace(',', '.'));
+      if (!isNaN(la) && !isNaN(lo) && d.lat == null && Math.abs(la) <= 90 && Math.abs(lo) <= 180) { d.lat = la; d.lon = lo; campi.posizione = 1; }
     });
     Object.keys(perSede).forEach(function (k) { if (!Object.keys(perSede[k]).length) delete perSede[k]; });
-    return { ok: true, perSede: perSede, righe: sup.righeLette, abbinate: abbinate, sediConDati: Object.keys(perSede).length, campi: Object.keys(campi) };
+    return { ok: true, perSede: perSede, righe: lette, abbinate: abbinate, scartate: scartate, perMetodo: perMetodo, sediConDati: Object.keys(perSede).length, campi: Object.keys(campi), colonne: colonne };
+  }
+
+  /**
+   * Giri di recupero (decisione del proponente, 21/11/2026): i giri fissi restano; quando in un giro restano meno di
+   * «soglia» tappe ancora da lavorare (ma qualcuna è già fatta), i suoi locali rimasti si uniscono a quelli degli altri
+   * giri nella stessa situazione in nuovi giri «RE». Serve almeno due giri da accorpare. [IPOTESI: soglia 6, come il minimo di un giro]
+   * giri: giri fissi con .codice; aperta(sede) -> true se ha ancora schede senza esito.
+   * -> { recupero: [giri RE con .key stabile, .da = codici d'origine], accorpati: { key giro fisso: true } }
+   */
+  function giriDiRecupero(giri, aperta, opzioni) {
+    opzioni = opzioni || {};
+    var soglia = opzioni.soglia || 6;
+    var candidati = giri.filter(function (g) { var n = g.sedi.filter(aperta).length; return n > 0 && n < soglia && n < g.sedi.length; });
+    if (candidati.length < 2) return { recupero: [], accorpati: {} };
+    var origine = {}, schede = [];
+    candidati.forEach(function (g) { g.sedi.filter(aperta).forEach(function (x) { origine[x.key] = g.codice; x.schede.forEach(function (s) { schede.push(s); }); }); });
+    var firma = candidati.map(function (g) { return g.codice; }).sort().join('+');
+    var nuovi = costruisciGiri(schede, { minimoTappe: opzioni.minimoTappe || 6, massimoTappe: opzioni.massimoTappe || 12, puntoDi: opzioni.puntoDi });
+    nuovi.sort(function (a, b) { return a.nome.localeCompare(b.nome); });
+    nuovi.forEach(function (g, i) {
+      g.key = 'RE:' + firma + ':' + (i + 1);         // resta uguale mentre registri gli esiti: cambia solo se cambiano i giri accorpati
+      g.recupero = true;
+      g.da = g.sedi.map(function (x) { return origine[x.key]; }).filter(function (v, k, a) { return v && a.indexOf(v) === k; });
+    });
+    var accorpati = {}; candidati.forEach(function (g) { accorpati[g.key] = true; });
+    return { recupero: nuovi, accorpati: accorpati };
   }
 
   /**
@@ -1864,7 +1962,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -3367,6 +3465,25 @@ window.avviaMda = function () {
       if (!m.codici[ck]) { m.codici[ck] = 'IT' + String(Object.keys(m.codici).filter(function (k) { return k.indexOf(insieme(m) + '|') === 0; }).length + 1).padStart(2, '0'); }
       g.codice = m.codici[ck];
     });
+    var fissi = giri;
+    // giri di recupero: i rimasti dei giri quasi finiti si accorpano in giri RE (regole.js, giriDiRecupero)
+    var codice = function (g, prefisso) {
+      var ck = insieme(m) + '|' + g.key;
+      if (!m.codici[ck]) m.codici[ck] = prefisso + String(Object.keys(m.codici).filter(function (k) { return k.indexOf(insieme(m) + '|') === 0 && m.codici[k].indexOf(prefisso) === 0; }).length + 1).padStart(2, '0');
+      return m.codici[ck];
+    };
+    var ordina = function (g) { g.sedi.sort(function (a, b) { return a.via.localeCompare(b.via) || numCivico(a.indirizzo) - numCivico(b.indirizzo); }); };
+    var rec = R.giriDiRecupero(fissi, function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); }, { soglia: 6, puntoDi: puntoDi(m) });
+    rec.recupero.forEach(function (g) { ordina(g); g.codice = codice(g, 'RE'); });
+    // «il mio giro»: giri a parte con i comuni e i generi scelti dall'operatore; i giri normali non cambiano
+    var mg = m.mioGiro, mioGiri = [];
+    if (mg && (mg.comuni.length || mg.generi.length)) {
+      var scelte = nellInsieme.filter(function (s) { return R.inItinerario(s, null) || insieme(m) !== 'da'; }).filter(function (s) {
+        return (!mg.comuni.length || mg.comuni.indexOf(s.comune || 'Comune non indicato') >= 0) && (!mg.generi.length || mg.generi.indexOf(tipologiaDi(s)) >= 0); });
+      mioGiri = R.costruisciGiri(scelte, { minimoTappe: 6, massimoTappe: 12, puntoDi: puntoDi(m) });
+      mioGiri.forEach(function (g, i) { ordina(g); g.key = 'MG:' + g.key; g.mio = true; g.codice = 'MG' + String(i + 1).padStart(2, '0'); });
+    }
+    giri = fissi.filter(function (g) { return !rec.accorpati[g.key]; }).concat(rec.recupero, mioGiri);
     var pesi = R.pesiProfiloA(m.N || daAccertare.length, aperteDa.length);
     // copie con il solo lavoro aperto, per il punteggio del turno
     var copie = giri.map(function (g) {
@@ -3380,7 +3497,7 @@ window.avviaMda = function () {
       g.punti = c.punti; g.classe = c.classe; g.componenti = c.componenti; g.residuo = c;
     });
     giri.sort(function (a, b) { return (b.punti || -1) - (a.punti || -1) || a.codice.localeCompare(b.codice); });
-    return { ammesse: ammesse, aperte: aperte, giri: giri, pesi: pesi, daAccertare: daAccertare, aperteDa: aperteDa, nellInsieme: nellInsieme };
+    return { ammesse: ammesse, aperte: aperte, giri: giri, giriFissi: fissi, pesi: pesi, daAccertare: daAccertare, aperteDa: aperteDa, nellInsieme: nellInsieme };
   }
 
   // ------------------------------------------------------------ disegno
@@ -3416,7 +3533,8 @@ window.avviaMda = function () {
   var attesaRicerca = null, schedaAperta = null;
   /** La sede (locale a un indirizzo) di una scheda: quella del giro, se è in un itinerario, altrimenti ricostruita dal master. */
   function sedeCercata(m, c, key) {
-    var g = c.giri.filter(function (x) { return x.sedi.some(function (y) { return y.key === key; }); })[0];
+    var conLei = c.giri.filter(function (x) { return x.sedi.some(function (y) { return y.key === key; }); });
+    var g = conLei.filter(function (x) { return !x.mio; })[0] || conLei[0];
     if (g) return { sede: g.sedi.filter(function (y) { return y.key === key; })[0], giro: g };
     var schede = tutteLeSchede(m).filter(function (s) { return R.sedeDi(s) === key; }), s0 = schede[0];
     return s0 ? { sede: { key: key, nome: s0.locale, comune: s0.comune, indirizzo: s0.indirizzo, tipologia: s0.tipologia, via: R.viaDi(s0.indirizzo), schede: schede }, giro: null } : null;
@@ -3466,6 +3584,20 @@ window.avviaMda = function () {
   }
 
   // ---- Itinerari: «Giornata sul campo»
+  var mioAperto = false;
+  /** «Il mio giro»: l'operatore sceglie comuni e generi di locale; IRIDE costruisce giri a parte (MG), i giri normali restano. */
+  function sezioneMioGiro(m, c) {
+    var mg = m.mioGiro || { comuni: [], generi: [] }, b = m.mioBozza || (m.mioBozza = { comuni: mg.comuni.slice(), generi: mg.generi.slice() });
+    var com = {}, gen = {};
+    c.nellInsieme.forEach(function (s) { if (esitoDi(m, s.id)) return; var k = s.comune || 'Comune non indicato'; com[k] = (com[k] || 0) + 1; gen[tipologiaDi(s)] = (gen[tipologiaDi(s)] || 0) + 1; });
+    var attivo = mg.comuni.length || mg.generi.length, n = c.giri.filter(function (g) { return g.mio && g.residuo; }).length;
+    var voci = function (o, sel, attr) { return Object.keys(o).sort(function (a, z) { return a.localeCompare(z, 'it'); }).map(function (k) { return '<label class="spunta"><input type="checkbox" ' + attr + '="' + esc(k) + '"' + (sel.indexOf(k) >= 0 ? ' checked' : '') + '> ' + esc(k) + ' <small>(' + o[k] + ')</small></label>'; }).join(''); };
+    return '<div class="mda-tendina' + (mioAperto ? ' aperta' : '') + '"><button id="tendina-mio" aria-expanded="' + mioAperto + '"><span class="et">Il mio giro</span><b>' +
+      (attivo ? n + (n === 1 ? ' giro' : ' giri') + ' · ' + esc(mg.comuni.concat(mg.generi).join(', ')) : 'Scegli comuni e generi di locale') + '</b></button>' +
+      (mioAperto ? '<div class="mda-voci"><p class="sub"><b>Comuni</b> (nessuno = tutti)</p>' + voci(com, b.comuni, 'data-mio-comune') +
+        '<p class="sub"><b>Generi di locale</b> (nessuno = tutti)</p>' + voci(gen, b.generi, 'data-mio-genere') +
+        '<div class="mda-nav"><button class="az forte" id="crea-mio"' + (b.comuni.length || b.generi.length ? '' : ' disabled') + '>Crea il mio giro</button>' + (attivo ? '<button class="az" id="togli-mio">Elimina il mio giro</button>' : '') + '</div></div>' : '') + '</div>';
+  }
   function filtriItinerario(m, c) {
     var conta = {}; INSIEMI.forEach(function (x) { conta[x[0]] = 0; });
     tutteLeSchede(m).forEach(function (s) {
@@ -3480,6 +3612,7 @@ window.avviaMda = function () {
     return '<section class="foglio mda-filtri"><div class="seg mda-insiemi">' + INSIEMI.map(function (x) {
         return '<button data-insieme="' + x[0] + '" class="' + (insieme(m) === x[0] ? 'on' : '') + '"><b>' + conta[x[0]] + '</b>' + x[1] + '</button>'; }).join('') + '</div>' +
       '<p class="sub">' + (insieme(m) === 'da' ? 'Validata, non accentrata, senza protocollo atto: le schede da accertare.' : insieme(m) === 'validate' ? 'Tutte le validate, anche quelle già accertate (con protocollo atto) o accentrate.' : 'Tutte le pagate, anche quelle con protocollo atto.') + ' Conteggi delle schede senza esito.</p>' +
+      sezioneMioGiro(m, c) +
       '<div class="mda-tendina' + (tendinaAperta ? ' aperta' : '') + '"><button id="tendina-tip" aria-expanded="' + tendinaAperta + '"><span class="et">Tipologie di locale</span><b>' + (scelte === nomi.length ? 'Tutte le tipologie' : scelte + ' di ' + nomi.length + ' tipologie') + '</b></button>' +
       (tendinaAperta ? '<div class="mda-voci"><label class="spunta"><input type="checkbox" data-tip-tutte' + (scelte === nomi.length ? ' checked' : '') + '> <b>Seleziona tutte</b></label>' +
         nomi.map(function (n) { return '<label class="spunta"><input type="checkbox" data-tip="' + esc(n) + '"' + (escl[n] ? '' : ' checked') + '> ' + esc(n) + ' <small>(' + tipi[n] + ')</small></label>'; }).join('') + '</div>' : '') + '</div></section>';
@@ -3496,14 +3629,14 @@ window.avviaMda = function () {
     var h = h0 + '<section class="foglio mda-giorno"><div class="kicker">' + esc(m.nome) + '</div><h1>Giornata sul campo</h1>' +
       '<p class="sub">' + esc(d.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })) + '</p>' +
       '<div class="mda-due"><label class="et">Giorno di uscita<input type="date" id="data" value="' + data + '"></label>' +
-      '<label class="et">Itinerario<select id="sel-giro">' + giri.map(function (x) { return '<option value="' + esc(x.key) + '"' + (x.key === g.key ? ' selected' : '') + '>' + esc(x.codice + ' · ' + x.nome + ' · ' + x.classe) + '</option>'; }).join('') + '</select></label></div>' +
+      '<label class="et">Itinerario<select id="sel-giro">' + giri.map(function (x) { return '<option value="' + esc(x.key) + '"' + (x.key === g.key ? ' selected' : '') + '>' + esc(x.codice + ' · ' + x.nome + (x.recupero ? ' · rimasti di ' + x.da.join(', ') : x.mio ? ' · il mio giro' : '') + ' · ' + x.classe) + '</option>'; }).join('') + '</select></label></div>' +
       '<div class="azioni"><button class="az forte" id="pos">' + ic('mirino') + (osserva != null ? 'Posizione attiva · giro più vicino' : 'Usa la mia posizione · trova il giro più vicino') + '</button>' +
       '<button class="az" id="programma">' + (m.programma[data] === g.key ? 'Programmato per questo giorno' : 'Programma questo giro') + '</button></div>' +
       (posMsg ? '<p class="sub mda-pos mda-gps">' + esc(posMsg) + '</p>' : '') + consigliati(m, c, giri) +
       (m.programma[data] && m.programma[data] !== g.key ? '<p class="sub">Per questo giorno era programmato ' + esc((giri.filter(function (x) { return x.key === m.programma[data]; })[0] || {}).codice || 'un altro giro') + '.</p>' : '') + '</section>';
     // riquadro del giro
     var p = c.pesi;
-    h += '<section class="foglio mda-giro"><div class="mda-etich"><b>' + esc(g.codice) + '</b><span>' + esc(g.classe) + '</span></div><h2>' + esc(g.nome) + '</h2><p class="sub">' + esc((g.comuni || [g.comune]).join(' · ')) + ' · ' + g.sedi.length + ' tappe</p>' +
+    h += '<section class="foglio mda-giro"><div class="mda-etich"><b>' + esc(g.codice) + '</b><span>' + esc(g.classe) + '</span></div><h2>' + esc(g.nome) + '</h2>' + (g.recupero ? '<p class="sub mda-pos">Giro di recupero: riunisce i locali rimasti di ' + esc(g.da.join(', ')) + ', dove restavano poche tappe.</p>' : g.mio ? '<p class="sub mda-pos">Il mio giro: comuni e generi scelti da te.</p>' : '') + '<p class="sub">' + esc((g.comuni || [g.comune]).join(' · ')) + ' · ' + g.sedi.length + ' tappe</p>' +
       '<div class="mda-cifre"><div><span>Importo itinerario</span><b>' + euro(g.residuo.importo) + '</b></div><div><span>Con esito</span><b>' + fatti + ' / ' + tot + '</b></div><div><span>Da lavorare</span><b>' + (tot - fatti) + '</b></div></div>' +
       '<div class="barra-av"><i style="width:' + Math.round(tot ? fatti / tot * 100 : 0) + '%"></i></div>' +
       '<details><summary>Perché questo punteggio</summary><p class="sub">Punti ' + g.punti.toFixed(1) + ' = densità ' + p.densita.toFixed(0) + '×' + g.componenti.D.toFixed(2) + ' + valore ' + p.valore.toFixed(0) + '×' + g.componenti.V.toFixed(2) +
@@ -3515,7 +3648,8 @@ window.avviaMda = function () {
     var apertaOggi = function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); };
     var aperteSedi = g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); });
     // giro di giornata: con meno di 6 tappe lavorabili si aggiungono le più vicine degli altri itinerari
-    var aggiunte = R.completaGiro(aperteSedi.filter(apertaOggi), giri.filter(function (x) { return x !== g; }).map(function (x) { return { giro: x, sedi: x.sedi.filter(apertaOggi) }; }), 6, pd);
+    // il mio giro non si completa con altri locali: resterebbero fuori dai comuni e dai generi scelti
+    var aggiunte = g.mio ? [] : R.completaGiro(aperteSedi.filter(apertaOggi), giri.filter(function (x) { return x !== g && !x.mio; }).map(function (x) { return { giro: x, sedi: x.sedi.filter(apertaOggi) }; }), 6, pd);
     var ordinate = R.ordinaTappe(aperteSedi.concat(aggiunte), pos, pd);
     var lavorabili = ordinate, daVerificare = ordinate.filter(function (x) { return chiusaOggi(m, x); });
     var tr = R.tratteMaps(lavorabili, pd);
@@ -3538,9 +3672,10 @@ window.avviaMda = function () {
   function viciniHtml(m, c, gSel) { return '<div class="mda-vicini">' + viciniInterno(m, c, gSel) + '</div>'; }
   function viciniInterno(m, c, gSel) {
     if (!pos) return '';
-    var pd = puntoDi(m), righe = [];
+    var pd = puntoDi(m), righe = [], visti = {};
     c.giri.forEach(function (g) {
       g.sedi.forEach(function (x) {
+        if (visti[x.key]) return; visti[x.key] = 1;
         var aperta = x.schede.filter(function (s) { return !esitoDi(m, s.id); })[0], p = pd(x);
         if (!aperta || !p) return;
         var d = R.distanzaMetri(pos, p);
@@ -3561,6 +3696,7 @@ window.avviaMda = function () {
   function consigliati(m, c, giri) {
     // solo le tappe ancora senza esito: prima contava anche quelle già fatte e i consigli restavano sempre gli stessi
     var soloAperte = giri.map(function (g) { return Object.assign({}, g, { originale: g, sedi: g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); }) }); });
+    soloAperte = soloAperte.filter(function (g) { return !g.mio; });
     var r = R.giriConsigliati(soloAperte, c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos).slice(0, 3);
     if (!r.length) return '';
     var km = function (v) { return v.vicina ? ' · ' + (v.vicina.stima ? 'zona a ' : 'a ') + distanza(v.vicina.metri) : pos ? ' · distanza non nota' : ''; };
@@ -3633,12 +3769,12 @@ window.avviaMda = function () {
   function vistaRegistro(m, c) {
     var conEsito = tutteLeSchede(m).filter(function (s) { return esitoDi(m, s.id); });
     var h = '<section class="foglio"><h1>Registro controlli</h1><p class="sub">' + conEsito.length + ' controlli registrati su questo telefono.</p><button class="az" id="xls-controlli">' + ic('scarica') + 'Esporta controlli in Excel</button></section>';
-    c.giri.forEach(function (g) {
+    c.giriFissi.forEach(function (g) {
       var fatti = g.schede.filter(function (s) { return esitoDi(m, s.id); });
       if (!fatti.length) return;
       h += '<details class="foglio"><summary>' + esc(g.codice + ' · ' + g.nome + ' · ' + fatti.length + '/' + g.schede.length + ' con esito') + '</summary>' + fatti.map(rigaControllo(m)).join('') + '</details>';
     });
-    var fuori = conEsito.filter(function (s) { return !c.giri.some(function (g) { return g.schede.indexOf(s) >= 0; }); });
+    var fuori = conEsito.filter(function (s) { return !c.giriFissi.some(function (g) { return g.schede.indexOf(s) >= 0; }); });
     if (fuori.length) h += '<details class="foglio"><summary>Fuori dagli itinerari · ' + fuori.length + '</summary>' + fuori.map(rigaControllo(m)).join('') + '</details>';
     return h;
   }
@@ -3777,9 +3913,10 @@ window.avviaMda = function () {
       var r = R.trovaIntestazione(t.tutte);
       var intest = (t.tutte[r] || []).map(function (h, i) { return String(h || '').trim() || 'Colonna ' + (i + 1); });
       var d = R.datiDiSupporto(tutteLeSchede(m), intest, t.tutte.slice(r + 1));
-      if (!d.ok) { toast('Documento non riconosciuto: mancano le colonne ' + d.mancanti.join(', ')); return; }
+      if (!d.ok) { toast('Documento non usabile: ' + d.motivo); return; }
       var nomi = { fascia: 'fasce orarie', chiusura: 'giorni di chiusura', statoGoogle: 'stato del locale', noteGoogle: 'note', posizione: 'posizioni' };
-      DB.chiedi({ titolo: 'Usare «' + file.name + '» come supporto?', testo: 'Righe lette: ' + d.righe + ' · locali del master trovati: ' + d.abbinate + ' · con dati utili: ' + d.sediConDati +
+      DB.chiedi({ titolo: 'Usare «' + file.name + '» come supporto?', testo: 'Righe lette: ' + d.righe + ' · abbinate con sicurezza: ' + d.abbinate + ' (protocollo ' + d.perMetodo.protocollo + ', partita IVA ' + d.perMetodo.piva + ', nome e comune ' + d.perMetodo.nomeComune + ', nome e via ' + d.perMetodo.nomeVia + ')' +
+        ' · scartate perché non trovate o incerte: ' + d.scartate + ' · locali con dati utili: ' + d.sediConDati +
         (d.campi.length ? ' (' + d.campi.map(function (c) { return nomi[c] || c; }).join(', ') + ')' : '') + '. Il master non cambia: questi dati si aggiungono dove mancano.', conferma: 'Usa' }, function () {
         m.supporto = m.supporto || {};
         Object.keys(d.perSede).forEach(function (k) {
@@ -3861,7 +3998,7 @@ window.avviaMda = function () {
     var prima = true, ultimiVicini = null;
     osserva = navigator.geolocation.watchPosition(function (p) {
       pos = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
-      var m = M(), c = calcola(m), giri = c.giri.filter(function (g) { return g.residuo; });
+      var m = M(), c = calcola(m), giri = c.giri.filter(function (g) { return g.residuo && !g.mio; });
       var aperteSedi = function (g) { return g.sedi.filter(function (x) { return x.schede.some(function (s) { return !esitoDi(m, s.id); }); }); };
       var r = R.giriConsigliati(giri.map(function (g) { return Object.assign({}, g, { sedi: aperteSedi(g), originale: g }); }), c.pesi, function (x) { return statoDi(m, x); }, puntoDi(m), pos);
       var best = r[0];
@@ -3954,7 +4091,7 @@ window.avviaMda = function () {
   var COL_OP = ['Tappa', 'Itinerario', 'Comune', 'Indirizzo', 'Locale', 'Tipologia', 'Importo €', 'Esito', 'Data sopralluogo', 'Note', 'ID'];
   var W_OP = [7, 34, 18, 34, 32, 20, 11, 18, 14, 34, 16];
   function rigaOp(m, s, tappa, giro) { var e = m.esiti[s.id] || {}; return [tappa, giro, s.comune, s.indirizzo, s.locale, s.tipologia, s.importo == null ? '' : s.importo, e.esito || '', dataExcel(e.data), e.note || '', s.id]; }
-  function giroDi(c, s) { var g = c.giri.filter(function (x) { return x.schede.indexOf(s) >= 0; })[0]; return g ? g.codice + ' · ' + g.nome : ''; }
+  function giroDi(c, s) { var g = c.giriFissi.filter(function (x) { return x.schede.indexOf(s) >= 0; })[0]; return g ? g.codice + ' · ' + g.nome : ''; }
   function foglioControlli(m, c) {
     var conEsito = tutteLeSchede(m).filter(function (s) { return esitoDi(m, s.id); })
       .sort(function (a, b) { return String(m.esiti[b.id].data).localeCompare(String(m.esiti[a.id].data)) || a.locale.localeCompare(b.locale, 'it'); });
@@ -4095,6 +4232,15 @@ window.avviaMda = function () {
     if (b.dataset.consiglio) { giroSel = b.dataset.consiglio; render(); return; }
     if (b.dataset.insieme) { m.insieme = b.dataset.insieme; giroSel = null; salva(); render(); return; }
     if (b.id === 'tendina-tip') { tendinaAperta = !tendinaAperta; render(); return; }
+    if (b.id === 'tendina-mio') { mioAperto = !mioAperto; render(); return; }
+    if (b.id === 'crea-mio') {
+      m.mioGiro = { comuni: m.mioBozza.comuni.slice(), generi: m.mioBozza.generi.slice() }; salva();
+      var cm = calcola(m), primo = cm.giri.filter(function (g) { return g.mio && g.residuo; })[0];
+      mioAperto = false; giroSel = primo ? primo.key : giroSel; render();
+      toast(primo ? 'Il mio giro è pronto: ' + cm.giri.filter(function (g) { return g.mio && g.residuo; }).length + ' giri MG nella lista degli itinerari' : 'Con questa scelta non ci sono locali da lavorare');
+      return;
+    }
+    if (b.id === 'togli-mio') { m.mioGiro = null; m.mioBozza = { comuni: [], generi: [] }; giroSel = null; salva(); render(); toast('Il mio giro eliminato'); return; }
     if (b.dataset.esito) { apriEsito(b.dataset.esito); return; }
     if (b.dataset.apriSede) { schedaAperta = b.dataset.apriSede; render(); var vv = document.getElementById('mda-vista'); if (vv) vv.scrollIntoView(); return; }
     if (b.hasAttribute('data-chiudi-scheda')) { schedaAperta = null; render(); return; }
@@ -4123,6 +4269,11 @@ window.avviaMda = function () {
     if ((k = t.dataset.fascia)) { (m.segnala[k] = m.segnala[k] || {}).fascia = t.value.trim(); salva(); render(); return; }
     if ((k = t.dataset.chiusura)) { (m.segnala[k] = m.segnala[k] || {}).chiusura = t.value.trim(); salva(); render(); return; }
     if ((k = t.dataset.chiusoOggi)) { (m.segnala[k] = m.segnala[k] || {}).chiusoOggi = t.checked ? data : ''; salva(); render(); toast(t.checked ? 'Segnato chiuso oggi: esce dalle tratte di oggi' : 'Tolta la segnalazione'); return; }
+    if (t.dataset.mioComune != null || t.dataset.mioGenere != null) {
+      var lista = t.dataset.mioComune != null ? m.mioBozza.comuni : m.mioBozza.generi, v = t.dataset.mioComune != null ? t.dataset.mioComune : t.dataset.mioGenere;
+      if (t.checked && lista.indexOf(v) < 0) lista.push(v); if (!t.checked && lista.indexOf(v) >= 0) lista.splice(lista.indexOf(v), 1);
+      salva(); render(); return;
+    }
     if (t.dataset.tip != null) { tipEscluse(m)[t.dataset.tip] = !t.checked; if (t.checked) delete tipEscluse(m)[t.dataset.tip]; giroSel = null; salva(); render(); return; }
     if (t.hasAttribute && t.hasAttribute('data-tip-tutte')) {
       var c2 = calcola(m), es = tipEscluse(m);
