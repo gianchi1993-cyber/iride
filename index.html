@@ -1049,8 +1049,9 @@ svg.mappa{width:100%;height:auto;display:block}
       if (!s) {
         // comune vuoto: si ricava dall'indirizzo quando è scritto dopo il civico
         var comuneRiga = val(riga, 'comune') || scomponiIndirizzo(val(riga, 'indirizzo')).dopo;
+        if (/^null$/i.test(comuneRiga)) comuneRiga = '';
         s = perId[id] = { id: id, protocollo: prot, locale: nome, organizzatore: val(riga, 'organizzatore'), piva: val(riga, 'piva'), cf: val(riga, 'cf'),
-          tipologia: val(riga, 'tipologia'), comune: comuneRiga, indirizzo: val(riga, 'indirizzo'), importo: importo,
+          tipologia: val(riga, 'tipologia'), comune: comuneRiga, indirizzo: senzaNull(val(riga, 'indirizzo')), importo: importo,
           stato: val(riga, 'stato'), accentrata: val(riga, 'accentrata'), atto: val(riga, 'atto'), strumenti: [], mq: val(riga, 'mq'),
           statoGoogle: val(riga, 'statoGoogle'), fascia: val(riga, 'fascia'), chiusura: val(riga, 'chiusura'), noteGoogle: val(riga, 'noteGoogle'),
           circoscrizione: val(riga, 'circoscrizione'), circoscrizioneLocale: val(riga, 'circoscrizioneLocale'), altre: {}, righe: [] };
@@ -1061,7 +1062,7 @@ svg.mappa{width:100%;height:auto;display:block}
         schede.push(s);
       } else {
         // stesso protocollo su un'altra riga: deve descrivere la stessa scheda
-        var diversi = ['locale', 'comune', 'indirizzo', 'stato'].filter(function (c) { return val(riga, c) && normalizza(val(riga, c)) !== normalizza(s[c]); });
+        var diversi = ['locale', 'comune', 'indirizzo', 'stato'].filter(function (c) { var v = c === 'indirizzo' ? senzaNull(val(riga, c)) : val(riga, c); return v && normalizza(v) !== normalizza(s[c]); });
         if (importo != null && s.importo != null && Math.abs(importo - s.importo) > 0.005) diversi.push('importo');
         if (diversi.length) conflitti.push({ protocollo: id, campi: diversi, riga: i + 1 });
         if (!s.atto && val(riga, 'atto')) s.atto = val(riga, 'atto');
@@ -1070,6 +1071,11 @@ svg.mappa{width:100%;height:auto;display:block}
       s.righe.push(i + 1);
     });
     return { ok: true, schede: schede, righeLette: lette, conflitti: conflitti, mappa: m, mancanti: [] };
+  }
+
+  /** «VIA X 9 null (null) null»: il sistema di origine scrive «null» dove il comune manca. Si toglie. */
+  function senzaNull(indirizzo) {
+    return String(indirizzo || '').replace(/\(\s*null\s*\)/gi, '').replace(/\bnull\b/gi, '').replace(/\s+/g, ' ').trim();
   }
 
   function eValidata(s) { return /^validat/i.test(String(s.stato || '').trim()); }
@@ -1093,7 +1099,7 @@ svg.mappa{width:100%;height:auto;display:block}
   var CIVICO = /^(\d+[a-z]?(\/\w+)?|snc|s\.?n\.?c\.?)$/i;
   /** Scompone un indirizzo in via, civico e (se c'è) comune scritto dopo il civico. */
   function scomponiIndirizzo(indirizzo) {
-    var s = String(indirizzo || '').trim();
+    var s = senzaNull(indirizzo);
     var parti = s.split(/\s+-\s+/);
     if (parti.length >= 2) return { via: parti[0].trim(), civico: parti[1].trim(), dopo: '' };
     s = s.split(/\(|,/)[0].trim();
@@ -3476,7 +3482,7 @@ window.avviaMda = function () {
     var dest = p ? p.lat.toFixed(6) + ',' + p.lon.toFixed(6) : R.indirizzoPulito(x.indirizzo, x.comune);
     var naviga = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(dest) + '&travelmode=driving';
     var h = '<article class="foglio mda-tappa' + (chiusaOggi(m, x) ? ' chiusa' : '') + '" data-sede="' + esc(x.key) + '"><div class="mda-n"><span>Tappa</span><b>' + (n >= 0 ? n + 1 : '—') + '</b></div><div class="mda-corpo">' +
-      '<div class="et">' + (x.daGiro ? 'da ' + esc(x.daGiro.codice) + ' · ' : '') + esc(x.comune) + ' · ' + esc(x.tipologia || 'tipologia n.d.') + (dist != null ? ' · ' + (dist < 1000 ? Math.round(dist) + ' m' : (dist / 1000).toFixed(1) + ' km') : '') + '</div>' +
+      '<div class="et">' + (x.daGiro ? 'da ' + esc(x.daGiro.codice) + ' · ' : '') + esc(x.comune || 'Comune non indicato') + ' · ' + esc(x.tipologia || 'tipologia n.d.') + (dist != null ? ' · ' + (dist < 1000 ? Math.round(dist) + ' m' : (dist / 1000).toFixed(1) + ' km') : '') + '</div>' +
       '<h3 class="mda-nome">' + esc(x.nome) + '</h3><p class="mda-ind">' + esc(x.indirizzo) + '</p>' +
       '<div class="badges">' + (function () { var s = statoDi(m, x); return '<span class="badge mda-orario-' + s.stato + '">' + esc(testoStato(s)) + '</span>'; })() +
       (insieme(m) !== 'da' ? x.schede.map(function (s) { var st = R.statoScheda(s); return '<span class="badge mda-' + st.colore + '">' + esc(st.etichetta) + '</span>'; }).join('') : '') +
@@ -3484,6 +3490,7 @@ window.avviaMda = function () {
       (chiusura ? '<span class="badge">Chiuso: ' + esc(chiusura) + '</span>' : '') +
       (m.geo[x.key] && m.geo[x.key].orari ? '<span class="badge">OpenStreetMap: ' + esc(m.geo[x.key].orari) + '</span>' : '') + segn.map(function (t) { return '<span class="badge cr">' + ic('avviso') + esc(t) + '</span>'; }).join('') + '</div>' +
       '<details><summary>Dati fiscali e scheda</summary>' + datiFiscali(x) + '</details>' +
+      (!x.comune || (x.schede[0] || {}).comuneManuale ? '<label class="et mda-comune">Comune' + (x.comune ? ' (scritto da te)' : ' · manca nel master: scrivilo per metterlo nel giro giusto') + '<input data-comune="' + esc(x.schede.map(function (s) { return s.id; }).join(',')) + '" value="' + esc(x.comune || '') + '" placeholder="Es. Fontebella"></label>' : '') +
       '<details><summary>Orari e segnalazioni</summary><div class="mda-modifica">' +
       '<label class="et">Fascia oraria<input data-fascia="' + esc(x.key) + '" value="' + esc(fascia || '') + '" placeholder="Es. 18:00-24:00"></label>' +
       '<label class="et">Giorno di chiusura<input data-chiusura="' + esc(x.key) + '" value="' + esc(chiusura || '') + '" placeholder="Es. lunedì"></label>' +
@@ -3581,7 +3588,7 @@ window.avviaMda = function () {
     var e = m.esiti[id] || {};
     var o = document.createElement('div'); o.className = 'ovl';
     o.innerHTML = '<form class="sheet"><div class="shead"><b>Scheda sopralluogo</b><button type="button" class="x" data-close aria-label="Chiudi">' + ic('chiudi') + '</button></div>' +
-      '<h2>' + esc(s.locale) + '</h2><p class="sub">' + esc(s.comune) + ' · ' + esc(s.indirizzo) + ' · ' + esc(s.protocollo || s.id) + ' · ' + euro(s.importo) + '</p>' +
+      '<h2>' + esc(s.locale) + '</h2><p class="sub">' + esc(s.comune || 'Comune non indicato') + ' · ' + esc(s.indirizzo) + ' · ' + esc(s.protocollo || s.id) + ' · ' + euro(s.importo) + '</p>' +
       '<div class="two"><label>Esito<select name="esito"><option value="">Senza esito</option>' + ESITI.map(function (x) { return '<option' + (x === e.esito ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select></label>' +
       '<label>Data sopralluogo<input type="date" name="data" value="' + esc(e.data || data) + '"></label></div>' +
       '<label>Note<input name="note" value="' + esc(e.note || '') + '"></label><p class="dup" data-err hidden></p>' +
@@ -3674,7 +3681,10 @@ window.avviaMda = function () {
       DB.chiedi({ titolo: 'Caricare il master in «' + m.nome + '»?', testo: (corrisponde ? '' : 'Il nome del file non è quello atteso («' + R.nomeFileMaster(m.nome) + '»): controlla di essere nella mandataria giusta. ') + testo, conferma: 'Carica' }, function () {
         m.schede = lettura.schede;
         // coordinate già presenti nel file (calcolate prima): valgono come posizione del locale, salvo un ingresso segnato col GPS
-        lettura.schede.forEach(function (s) { if (s.lat != null) m.geo[R.sedeDi(s)] = { lat: s.lat, lon: s.lon, livello: 'file', t: Date.now() }; });
+        // il comune scritto a mano sul campo vale anche per le versioni successive del master
+        lettura.schede.forEach(function (s) { var c = (m.comuni || {})[s.id]; if (!s.comune && c) { s.comune = c; s.comuneManuale = true; } });
+        // posizioni senza comune: cercate solo per via, spesso sbagliate di centinaia di km. Non si usano.
+        lettura.schede.forEach(function (s) { if (s.lat != null && s.comune) m.geo[R.sedeDi(s)] = { lat: s.lat, lon: s.lon, livello: 'file', t: Date.now() }; });
         m.master = { file: file.name, caricatoIl: oggi(), righeLette: lettura.righeLette, schede: lettura.schede.length };
         if (!m.N) m.N = ammesse.length;             // schede aperte all'avvio della campagna: base della progressione
         salva(); tab = 'itin'; giroSel = null; render();
@@ -3687,7 +3697,7 @@ window.avviaMda = function () {
   function sediSenzaPosizione(m) {
     var pd = puntoDi(m), visti = {}, out = [];
     tutteLeSchede(m).filter(function (s) { return R.inItinerario(s, null); }).forEach(function (s) {
-      var k = R.sedeDi(s); if (visti[k] || pd({ key: k }) || (m.geo[k] && m.geo[k].nonTrovato)) return; visti[k] = 1; out.push(s);
+      var k = R.sedeDi(s); if (!s.comune || visti[k] || pd({ key: k }) || (m.geo[k] && m.geo[k].nonTrovato)) return; visti[k] = 1; out.push(s);
     });
     return out;
   }
@@ -3898,6 +3908,11 @@ window.avviaMda = function () {
     if (t.id === 'sel-giro') { giroSel = t.value; render(); return; }
     if (t.id === 'filtro-comune') { filtroComune = t.value; render(); return; }
     var k;
+    if ((k = t.dataset.comune)) {
+      var nuovo = t.value.trim(), ids = k.split(','); m.comuni = m.comuni || {};
+      tutteLeSchede(m).forEach(function (s) { if (ids.indexOf(s.id) < 0) return; s.comune = nuovo; s.comuneManuale = !!nuovo; if (nuovo) m.comuni[s.id] = nuovo; else delete m.comuni[s.id]; });
+      giroSel = null; salva(); render(); toast(nuovo ? 'Comune scritto: il locale passa ai giri di ' + nuovo : 'Comune tolto'); return;
+    }
     if ((k = t.dataset.fascia)) { (m.segnala[k] = m.segnala[k] || {}).fascia = t.value.trim(); salva(); render(); return; }
     if ((k = t.dataset.chiusura)) { (m.segnala[k] = m.segnala[k] || {}).chiusura = t.value.trim(); salva(); render(); return; }
     if ((k = t.dataset.chiusoOggi)) { (m.segnala[k] = m.segnala[k] || {}).chiusoOggi = t.checked ? data : ''; salva(); render(); toast(t.checked ? 'Segnato chiuso oggi: esce dalle tratte di oggi' : 'Tolta la segnalazione'); return; }
