@@ -3490,7 +3490,7 @@ window.avviaMda = function () {
     var pd = puntoDi(m), p = pd(x), sg = segnalaDi(m, x.key), s0 = x.schede[0];
     var aperte = x.schede.filter(function (s) { return !esitoDi(m, s.id); });
     var importo = aperte.reduce(function (t, s) { return t + (s.importo || 0); }, 0);
-    var fascia = sg.fascia || s0.fascia, chiusura = sg.chiusura || s0.chiusura;
+    var fo = fonteOrari(m, x), fascia = fo.testo, chiusura = chiusuraDi(m, x);
     var segn = [];
     if (s0.statoGoogle && !/^aperto$/i.test(s0.statoGoogle)) segn.push(s0.statoGoogle);
     if (s0.noteGoogle) segn.push(s0.noteGoogle);
@@ -3504,9 +3504,9 @@ window.avviaMda = function () {
       '<h3 class="mda-nome">' + esc(x.nome) + '</h3><p class="mda-ind">' + esc(x.indirizzo) + '</p>' +
       '<div class="badges">' + (function () { var s = statoDi(m, x); return '<span class="badge mda-orario-' + s.stato + '">' + esc(testoStato(s)) + '</span>'; })() +
       (insieme(m) !== 'da' ? x.schede.map(function (s) { var st = R.statoScheda(s); return '<span class="badge mda-' + st.colore + '">' + esc(st.etichetta) + '</span>'; }).join('') : '') +
-      (fascia ? '<span class="badge">Fascia: ' + esc(fascia) + '</span>' : '<span class="badge mda-verif">Apertura da verificare</span>') +
+      (fascia ? '<span class="badge">Fascia: ' + esc(fascia) + (fo.fonte && fo.fonte !== 'master' ? ' · ' + esc(fo.fonte) : '') + '</span>' : '<span class="badge mda-verif">Apertura da verificare</span>') +
       (chiusura ? '<span class="badge">Chiuso: ' + esc(chiusura) + '</span>' : '') +
-      (m.geo[x.key] && m.geo[x.key].orari ? '<span class="badge">OpenStreetMap: ' + esc(m.geo[x.key].orari) + '</span>' : '') + segn.map(function (t) { return '<span class="badge cr">' + ic('avviso') + esc(t) + '</span>'; }).join('') + '</div>' +
+      segn.map(function (t) { return '<span class="badge cr">' + ic('avviso') + esc(t) + '</span>'; }).join('') + '</div>' +
       '<details><summary>Dati fiscali e scheda</summary>' + datiFiscali(x) + '</details>' +
       (!x.comune || (x.schede[0] || {}).comuneManuale ? '<label class="et mda-comune">Comune' + (x.comune ? ' (scritto da te)' : ' · manca nel master: scrivilo per metterlo nel giro giusto') + '<input data-comune="' + esc(x.schede.map(function (s) { return s.id; }).join(',')) + '" value="' + esc(x.comune || '') + '" placeholder="Es. Fontebella"></label>' : '') +
       '<details><summary>Orari e segnalazioni</summary><div class="mda-modifica">' +
@@ -3843,10 +3843,10 @@ window.avviaMda = function () {
       'Denominazione Organizzatore', 'Partita Iva', 'Codice Fiscale', 'Fascia oraria', 'Giorno di chiusura', 'Stato Google', 'Note Google Maps', 'Itinerario', 'Esito', 'Data sopralluogo', 'Note'];
     var stili = [0];
     var dati = righe.map(function (s) {
-      var st = R.statoScheda(s), e = m.esiti[s.id] || {}, sg = m.segnala[R.sedeDi(s)] || {};
+      var st = R.statoScheda(s), e = m.esiti[s.id] || {}, sg = m.segnala[R.sedeDi(s)] || {}, sede = { key: R.sedeDi(s), schede: [s] };
       stili.push(STILE_COLORE[st.colore] || 0);
       return [st.etichetta, s.protocollo, s.locale, s.comune, s.indirizzo, s.tipologia, s.importo == null ? '' : s.importo, s.accentrata, s.atto, s.stato, (s.strumenti || []).join(', '),
-        s.organizzatore, s.piva, s.cf, sg.fascia || s.fascia, sg.chiusura || s.chiusura, s.statoGoogle, [s.noteGoogle, sg.chiusoOggi ? 'chiuso il ' + sg.chiusoOggi : '', sg.cessazione ? 'possibile cessazione' : ''].filter(Boolean).join(' · '),
+        s.organizzatore, s.piva, s.cf, fonteOrari(m, sede).testo, chiusuraDi(m, sede), s.statoGoogle, [s.noteGoogle, sg.chiusoOggi ? 'chiuso il ' + sg.chiusoOggi : '', sg.cessazione ? 'possibile cessazione' : ''].filter(Boolean).join(' · '),
         giroDi(c, s), e.esito || '', dataExcel(e.data), e.note || ''];
     });
     return foglio([COL].concat(dati), [16, 16, 30, 18, 32, 18, 11, 10, 18, 12, 14, 28, 14, 18, 18, 14, 16, 28, 30, 16, 14, 28], stili);
