@@ -1625,6 +1625,31 @@ svg.mappa{width:100%;height:auto;display:block}
    * esiti = { id scheda: { esito, data, note } }.
    * -> { giorni: [{ data, locali }], nonVisitati: [locali], totali: { visitati, nonVisitati, schede, ac, acLocali, acImporto, perEsito } }
    */
+  /**
+   * Il locale è riconosciuto da comune + nome + indirizzo (sedeDi). Quando cambia il comune (scritto a mano, lista ufficiale)
+   * o si pulisce l'indirizzo, la chiave cambia: posizione, punto fissato, segnalazioni, risposte Gemini e dati di supporto
+   * vanno spostati sulla chiave nuova, altrimenti il locale li perde. prima = { id scheda: chiave prima }.
+   * Dove la chiave nuova ha già un dato, resta quello. -> numero di locali spostati.
+   */
+  var MAPPE_SEDE = ['geo', 'pin', 'segnala', 'gemini', 'supporto'];
+  function spostaDatiSede(m, schede, prima) {
+    var fatte = {}, n = 0;
+    schede.forEach(function (s) {
+      var da = prima[s.id], a = sedeDi(s);
+      if (!da || da === a || fatte[da + '>' + a]) return;
+      fatte[da + '>' + a] = 1; n++;
+      MAPPE_SEDE.forEach(function (k) {
+        var mappa = m[k];
+        if (!mappa || mappa[da] == null) return;
+        if (mappa[a] == null) mappa[a] = mappa[da];
+        // la chiave vecchia si toglie solo se nessun'altra scheda la usa ancora
+        if (!schede.some(function (x) { return sedeDi(x) === da; })) delete mappa[da];
+      });
+    });
+    return n;
+  }
+  function chiaviSede(schede) { var o = {}; schede.forEach(function (s) { o[s.id] = sedeDi(s); }); return o; }
+
   function registroVisite(schede, esiti) {
     var perSede = {}, elenco = [];
     schede.forEach(function (s) {
@@ -2052,7 +2077,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, applicaComuniManuali: applicaComuniManuali, registroVisite: registroVisite, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, applicaComuniManuali: applicaComuniManuali, registroVisite: registroVisite, spostaDatiSede: spostaDatiSede, chiaviSede: chiaviSede, senzaNull: senzaNull, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -3449,7 +3474,15 @@ window.avviaMda = function () {
 
   // ------------------------------------------------------------ memoria del dispositivo
   var CHIAVE = 'iride-mda', S;
-  function carica() { try { S = JSON.parse(localStorage.getItem(CHIAVE) || 'null'); } catch (e) { S = null; } S = S || { attiva: null, mandatarie: [] }; }
+  function carica() {
+    try { S = JSON.parse(localStorage.getItem(CHIAVE) || 'null'); } catch (e) { S = null; } S = S || { attiva: null, mandatarie: [] };
+    // master caricati prima della pulizia: «VIA X 4 null (null) null» → «VIA X 4»
+    S.mandatarie.forEach(function (m) {
+      var tutte = (m.schede || []).concat(m.manuali || []), prima = R.chiaviSede(tutte);
+      tutte.forEach(function (s) { s.indirizzo = R.senzaNull(s.indirizzo); if (/^null$/i.test(String(s.comune || '').trim())) s.comune = ''; });
+      R.spostaDatiSede(m, tutte, prima);
+    });
+  }
   function salva() { try { localStorage.setItem(CHIAVE, JSON.stringify(S)); return true; } catch (e) { toast('Memoria del telefono piena o non disponibile: dati non salvati'); return false; } }
   carica();
   function M() { return S.mandatarie.filter(function (m) { return m.id === S.attiva; })[0] || S.mandatarie[0] || null; }
@@ -4096,8 +4129,10 @@ window.avviaMda = function () {
   }
 
   function applicaListaSuM(m) {
+    var prima = R.chiaviSede(m.schede);
     var r = R.applicaLista(m.schede, m.lista.perScheda);
     R.applicaComuniManuali(m.schede, m.comuni);
+    R.spostaDatiSede(m, tutteLeSchede(m), prima);
     r.posizioni.forEach(function (p) { if (!m.geo[p.key] && !m.pin[p.key]) m.geo[p.key] = { lat: p.lat, lon: p.lon, livello: 'lista', t: Date.now() }; });
     return r;
   }
@@ -4441,12 +4476,15 @@ window.avviaMda = function () {
     var k;
     if ((k = t.dataset.comune)) {
       var nuovo = t.value.trim(), ids = k.split(','); m.comuni = m.comuni || {};
-      var torna = '';
+      var torna = '', prima = R.chiaviSede(tutteLeSchede(m));
       tutteLeSchede(m).forEach(function (s) {
         if (ids.indexOf(s.id) < 0) return;
         if (nuovo) { if (!s.comuneManuale) s.comuneOrig = s.comune || ''; s.comune = nuovo; s.comuneManuale = true; m.comuni[s.id] = nuovo; }
         else { if (s.comuneManuale) s.comune = s.comuneOrig || ''; s.comuneManuale = false; delete m.comuni[s.id]; torna = s.comune; }
       });
+      R.spostaDatiSede(m, tutteLeSchede(m), prima);
+      var cambiata = tutteLeSchede(m).filter(function (s) { return ids.indexOf(s.id) >= 0; })[0];
+      if (schedaAperta && cambiata) schedaAperta = R.sedeDi(cambiata);   // la scheda aperta resta aperta, con il comune nuovo
       giroSel = null; salva(); render(); toast(nuovo ? 'Comune scritto: il locale passa ai giri di ' + nuovo : torna ? 'Correzione tolta: torna ' + torna : 'Comune tolto'); return;
     }
     if ((k = t.dataset.fascia)) { (m.segnala[k] = m.segnala[k] || {}).fascia = t.value.trim(); salva(); render(); return; }
