@@ -3314,7 +3314,7 @@ window.avviaMda = function () {
   function orariDi(m, sede) {
     var s0 = sede.schede[0] || {}, su = supportoDi(m, sede.key);
     var o = R.leggiOrari(fonteOrari(m, sede).testo);
-    if (/chius[oa] (definitivamente|temporaneamente)/i.test((s0.statoGoogle || '') + ' ' + (su.statoGoogle || ''))) o = { stato: 'chiuso', giorni: {} };
+    if (!segnalaDi(m, sede.key).riaperto && /chius[oa] (definitivamente|temporaneamente)/i.test((s0.statoGoogle || '') + ' ' + (su.statoGoogle || ''))) o = { stato: 'chiuso', giorni: {} };
     return o;
   }
   function chiusuraDi(m, sede) { return segnalaDi(m, sede.key).chiusura || (sede.schede[0] || {}).chiusura || supportoDi(m, sede.key).chiusura || geminiDi(m, sede.key).chiusura || ''; }
@@ -3567,6 +3567,7 @@ window.avviaMda = function () {
     if (s0.noteGoogle) segn.push(s0.noteGoogle);
     if (sg.chiusoOggi === data) segn.push('Chiuso oggi (segnalato)');
     if (sg.cessazione) segn.push('Possibile cessazione (segnalata)');
+    if (sg.riaperto) segn = segn.filter(function (v) { return !/chius[oa] (definitivamente|temporaneamente)/i.test(v); }).concat(['Riaperto (verificato sul posto)']);
     var dist = pos && p ? R.distanzaMetri(pos, p) : null;
     var dest = p ? p.lat.toFixed(6) + ',' + p.lon.toFixed(6) : R.indirizzoPulito(x.indirizzo, x.comune);
     var naviga = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(dest) + '&travelmode=driving';
@@ -3585,6 +3586,7 @@ window.avviaMda = function () {
       '<label class="et">Giorno di chiusura<input data-chiusura="' + esc(x.key) + '" value="' + esc(chiusura || '') + '" placeholder="Es. lunedì"></label>' +
       '<label class="spunta"><input type="checkbox" data-chiuso-oggi="' + esc(x.key) + '"' + (sg.chiusoOggi === data ? ' checked' : '') + '> Chiuso oggi</label>' +
       '<label class="spunta"><input type="checkbox" data-cessazione="' + esc(x.key) + '"' + (sg.cessazione ? ' checked' : '') + '> Possibile cessazione</label>' +
+      (/chius[oa] (definitivamente|temporaneamente)/i.test(s0.statoGoogle || '') || sg.riaperto ? '<label class="spunta"><input type="checkbox" data-riaperto="' + esc(x.key) + '"' + (sg.riaperto ? ' checked' : '') + '> Riaperto: verificato sul posto (Google dice «' + esc(s0.statoGoogle || 'chiuso') + '»)</label>' : '') +
       '<label class="spunta"><input type="checkbox" data-includi="' + esc(x.key) + '"' + (sg.includi === data ? ' checked' : '') + '> Verifica sul posto oggi anche se segnalato chiuso</label>' +
       (fonteOrari(m, x).fonte ? '<p class="sub">Orari: ' + esc(fonteOrari(m, x).fonte) + '</p>' : '') +
       '<button class="az" data-gemini="' + esc(x.key) + '">Chiedi a Gemini orari e chiusura</button></div></details>' +
@@ -3946,7 +3948,7 @@ window.avviaMda = function () {
       var st = R.statoScheda(s), e = m.esiti[s.id] || {}, sg = m.segnala[R.sedeDi(s)] || {}, sede = { key: R.sedeDi(s), schede: [s] };
       stili.push(STILE_COLORE[st.colore] || 0);
       return [st.etichetta, s.protocollo, s.locale, s.comune, s.indirizzo, s.tipologia, s.importo == null ? '' : s.importo, s.accentrata, s.atto, s.stato, (s.strumenti || []).join(', '),
-        s.organizzatore, s.piva, s.cf, fonteOrari(m, sede).testo, chiusuraDi(m, sede), s.statoGoogle, [s.noteGoogle, sg.chiusoOggi ? 'chiuso il ' + sg.chiusoOggi : '', sg.cessazione ? 'possibile cessazione' : ''].filter(Boolean).join(' · '),
+        s.organizzatore, s.piva, s.cf, fonteOrari(m, sede).testo, chiusuraDi(m, sede), s.statoGoogle, [s.noteGoogle, sg.chiusoOggi ? 'chiuso il ' + sg.chiusoOggi : '', sg.cessazione ? 'possibile cessazione' : '', sg.riaperto ? 'riaperto (verificato sul posto)' : ''].filter(Boolean).join(' · '),
         giroDi(c, s), e.esito || '', dataExcel(e.data), e.note || ''];
     });
     return foglio([COL].concat(dati), [16, 16, 30, 18, 32, 18, 11, 10, 18, 12, 14, 28, 14, 18, 18, 14, 16, 28, 30, 16, 14, 28], stili);
@@ -4105,6 +4107,7 @@ window.avviaMda = function () {
       giroSel = null; salva(); render(); return;
     }
     if ((k = t.dataset.includi)) { (m.segnala[k] = m.segnala[k] || {}).includi = t.checked ? data : ''; salva(); render(); toast(t.checked ? 'Incluso nel giro di oggi come verifica sul posto' : 'Tolto dal giro di oggi'); return; }
+    if ((k = t.dataset.riaperto)) { (m.segnala[k] = m.segnala[k] || {}).riaperto = t.checked; salva(); render(); toast(t.checked ? 'Segnato riaperto: torna nelle tratte' : 'Tolto «riaperto»'); return; }
     if ((k = t.dataset.cessazione)) { (m.segnala[k] = m.segnala[k] || {}).cessazione = t.checked; salva(); render(); return; }
   });
   document.addEventListener('submit', function (ev) {
