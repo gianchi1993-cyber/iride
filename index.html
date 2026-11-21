@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="it">
 <head>
+<link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#0a1322"><link rel="apple-touch-icon" href="icona-192.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="IRIDE">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#14213d">
@@ -1074,6 +1075,21 @@ svg.mappa{width:100%;height:auto;display:block}
   }
 
   /** «VIA X 9 null (null) null»: il sistema di origine scrive «null» dove il comune manca. Si toglie. */
+  /**
+   * Copia di sicurezza di una mandataria (esiti, segnalazioni, orari, comuni scritti a mano…) unita a quella sul telefono.
+   * Non si perde niente: dove entrambe hanno un dato vale quello del telefono, il resto arriva dalla copia;
+   * le schede del master arrivano dalla copia solo se sul telefono non c'è un master.
+   */
+  var MAPPE_COPIA = ['esiti', 'segnala', 'gemini', 'comuni', 'pin', 'geo', 'programma', 'codici', 'supporto', 'tipEscluse'];
+  function unisciCopia(attuale, copia) {
+    var out = Object.assign({}, copia, attuale);
+    MAPPE_COPIA.forEach(function (k) { if (copia[k] || attuale[k]) out[k] = Object.assign({}, copia[k] || {}, attuale[k] || {}); });
+    if (!(attuale.schede || []).length) { out.schede = copia.schede || []; out.master = copia.master || null; out.N = copia.N || 0; }
+    var ids = {}; out.manuali = (attuale.manuali || []).concat(copia.manuali || []).filter(function (s) { if (ids[s.id]) return false; ids[s.id] = 1; return true; });
+    var nuovi = Object.keys(copia.esiti || {}).filter(function (id) { return !(attuale.esiti || {})[id]; }).length;
+    return { mandataria: out, esitiRecuperati: nuovi };
+  }
+
   function senzaNull(indirizzo) {
     return String(indirizzo || '').replace(/\(\s*null\s*\)/gi, '').replace(/\bnull\b/gi, '').replace(/\s+/g, ' ').trim();
   }
@@ -1824,7 +1840,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -3357,7 +3373,7 @@ window.avviaMda = function () {
     var h = '<div class="mda-barra"><div class="mda-righe">' +
       (S.mandatarie.length ? '<select id="sel-mand" aria-label="Mandataria">' + S.mandatarie.map(function (x) { return '<option value="' + x.id + '"' + (m && x.id === m.id ? ' selected' : '') + '>' + esc(x.nome) + '</option>'; }).join('') + '</select>' : '') +
       '<button class="az piccolo" id="agg-mand" aria-label="Aggiungi mandataria">' + ic('piu') + (S.mandatarie.length ? '' : 'Aggiungi mandataria') + '</button>' +
-      (m ? '<button class="az piccolo" id="carica-master">' + ic('scarica') + 'Carica master</button><button class="az piccolo" id="carica-supporto" aria-label="Carica un documento di supporto">Supporto</button><button class="az piccolo" id="dal-drive" aria-label="Carica master dal Drive">Drive</button>' : '') + '</div>';
+      (m ? '<button class="az piccolo" id="carica-master">' + ic('scarica') + 'Carica master</button><button class="az piccolo" id="carica-supporto" aria-label="Carica un documento di supporto">Supporto</button><button class="az piccolo forte" id="fine-missione">Salva esiti</button><button class="az piccolo" id="dal-drive" aria-label="Carica master dal Drive">Drive</button>' : '') + '</div>';
     if (m) {
       var mancanti = m.schede.length ? sediSenzaPosizione(m).length : 0;
       h += '<p class="mda-info">' + (m.master ? esc(m.master.file) + ' · ' + esc(m.master.caricatoIl) + ' · ' + m.master.schede + ' schede' : 'File atteso: ' + esc(R.nomeFileMaster(m.nome)) + '.xls o .xlsx') +
@@ -3860,7 +3876,7 @@ window.avviaMda = function () {
       return;
     }
     var u = URL.createObjectURL(blob), a = document.createElement('a'); a.href = u; a.download = nome; document.body.appendChild(a); a.click();
-    setTimeout(function () { URL.revokeObjectURL(u); a.remove(); }, 4000); toast('Excel scaricato');
+    setTimeout(function () { URL.revokeObjectURL(u); a.remove(); }, 4000); toast(/\.xlsx$/.test(nome) ? 'Excel scaricato' : 'File scaricato');
   }
   function excelControlli() { var m = M(), c = calcola(m); salvaFile('Controlli ' + m.nome + ' ' + oggi() + '.xlsx', cartella([['Controlli', foglioControlli(m, c)]])); }
   function excelCompleto() {
@@ -3874,7 +3890,66 @@ window.avviaMda = function () {
       fogli.push([g.codice, foglio([COL_OP].concat(righe), W_OP)]);
     });
     fogli.push(['Controlli', foglioControlli(m, c)]);
-    salvaFile('MDA ' + m.nome + ' completo ' + oggi() + '.xlsx', cartella(fogli));
+    return cartella(fogli);
+  }
+  function nomeCompleto(m) { return 'MDA ' + m.nome + ' completo ' + oggi() + '.xlsx'; }
+
+  // ------------------------------------------------------------ fine missione: esiti salvati fuori dal browser
+  /**
+   * Due file: l'Excel completo (si legge e si condivide) e la copia di sicurezza (.txt) che IRIDE sa ricaricare
+   * se la memoria del browser viene cancellata. Il Drive si raggiunge con la condivisione di Android, senza alcuna
+   * configurazione: nella finestra del Drive si sceglie la cartella ARGO › mandataria.
+   */
+  function copiaDiSicurezza(m) {
+    var testo = JSON.stringify({ tipo: 'IRIDE-MDA copia di sicurezza', versione: 1, creata: new Date().toISOString(), mandataria: m });
+    return new File([testo], 'IRIDE copia ' + m.nome + ' ' + oggi() + '.txt', { type: 'text/plain' });
+  }
+  function fineMissione() {
+    var m = M(), c = calcola(m), tutte = tutteLeSchede(m);
+    var conEsito = tutte.filter(function (s) { return esitoDi(m, s.id); }), diOggi = conEsito.filter(function (s) { return m.esiti[s.id].data === oggi(); });
+    var o = document.createElement('div'); o.className = 'ovl';
+    o.innerHTML = '<div class="sheet"><div class="shead"><b>Fine missione · ' + esc(m.nome) + '</b><button type="button" class="x" data-close aria-label="Chiudi">' + ic('chiudi') + '</button></div>' +
+      '<p class="sub">Esiti registrati oggi: <b>' + diOggi.length + '</b> · in tutto: <b>' + conEsito.length + '</b>. Salvali fuori dal browser <b>prima</b> di cancellare schede o cronologia: ' +
+      'la memoria del browser è l\'unico posto dove stanno.</p>' +
+      '<button class="save" data-drive>Salva su Google Drive</button>' +
+      '<p class="sub">Si apre la condivisione del telefono: scegli <b>Drive</b>, poi la cartella <b>ARGO › ' + esc(m.nome) + '</b> e salva.</p>' +
+      '<button class="az" data-telefono>Salva sul telefono (Download)</button>' +
+      '<p class="sub">Salvo due file: l\'<b>Excel completo</b> con esiti e note, e la <b>copia di sicurezza</b> che IRIDE sa ricaricare.</p>' +
+      '<button class="az" data-riprendi>Riprendi da una copia di sicurezza</button>' +
+      '<p class="sub">Se il telefono è stato svuotato, o per passare il lavoro a un altro telefono: scegli il file «IRIDE copia…». Gli esiti già presenti non vengono toccati.</p></div>';
+    document.body.appendChild(o);
+    var file = function () { return [new File([excelCompleto()], nomeCompleto(m), { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), copiaDiSicurezza(m)]; };
+    var scarica = function (fs) { fs.forEach(function (f, i) { setTimeout(function () { salvaFile(f.name, f); }, i * 700); }); };
+    o.addEventListener('click', function (ev) {
+      if (ev.target === o || ev.target.closest('[data-close]')) { o.remove(); return; }
+      if (ev.target.closest('[data-telefono]')) { scarica(file()); m.salvatoIl = new Date().toISOString(); salva(); toast('File salvati in Download'); return; }
+      if (ev.target.closest('[data-drive]')) {
+        var fs = file(), si = function (x) { try { return navigator.canShare && navigator.canShare({ files: x }); } catch (e) { return false; } };
+        var daCondividere = si(fs) ? fs : si([fs[1]]) ? [fs[1]] : null;
+        if (!navigator.share || !daCondividere) { scarica(fs); toast('Condivisione non disponibile qui: file salvati in Download, caricali dal Drive con «+ › Carica»'); return; }
+        if (daCondividere.length < fs.length) { scarica([fs[0]]); toast('L\'Excel va in Download; al Drive invio la copia di sicurezza'); }
+        navigator.share({ files: daCondividere, title: 'Esiti MDA ' + m.nome + ' ' + oggi() }).then(function () { m.salvatoIl = new Date().toISOString(); salva(); toast('Condiviso: controlla di averlo salvato in ARGO › ' + m.nome); },
+          function (e) { if (!e || e.name !== 'AbortError') { scarica(fs); toast('Condivisione non riuscita: file salvati in Download'); } });
+        return;
+      }
+      if (ev.target.closest('[data-riprendi]')) {
+        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.txt,.json,text/plain,application/json';
+        inp.addEventListener('change', function () { if (inp.files[0]) { o.remove(); riprendiCopia(inp.files[0]); } }); inp.click();
+      }
+    });
+  }
+  function riprendiCopia(file) {
+    file.text().then(function (testo) {
+      var d; try { d = JSON.parse(testo); } catch (e) { d = null; }
+      if (!d || d.tipo !== 'IRIDE-MDA copia di sicurezza' || !d.mandataria) { toast('Questo file non è una copia di sicurezza di IRIDE'); return; }
+      var copia = d.mandataria, gia = S.mandatarie.filter(function (x) { return R.normalizza(x.nome) === R.normalizza(copia.nome); })[0];
+      var r = R.unisciCopia(gia || { id: copia.id, nome: copia.nome, schede: [], esiti: {}, manuali: [] }, copia);
+      DB.chiedi({ titolo: 'Riprendere la copia di «' + copia.nome + '»?', testo: 'Copia del ' + String(d.creata || '').slice(0, 10) + '. Esiti da recuperare: ' + r.esitiRecuperati + '. ' +
+        (gia ? 'La mandataria è già sul telefono: si aggiunge solo quello che manca, nulla viene cancellato.' : 'La mandataria non è sul telefono: viene ricreata con master ed esiti.'), conferma: 'Riprendi' }, function () {
+        if (gia) S.mandatarie[S.mandatarie.indexOf(gia)] = r.mandataria; else S.mandatarie.push(r.mandataria);
+        S.attiva = r.mandataria.id; salva(); render(); toast('Copia ripresa: ' + r.esitiRecuperati + ' esiti recuperati');
+      });
+    });
   }
 
   // ------------------------------------------------------------ comandi
@@ -3919,7 +3994,8 @@ window.avviaMda = function () {
     if (b.id === 'geo-via') { cercaPosizioni(); return; }
     if (b.id === 'geo-stop' && geoInCorso) { geoInCorso.stop = true; return; }
     if (b.id === 'xls-controlli') { excelControlli(); return; }
-    if (b.id === 'xls-completo') { excelCompleto(); return; }
+    if (b.id === 'xls-completo') { salvaFile(nomeCompleto(m), excelCompleto()); return; }
+    if (b.id === 'fine-missione') { fineMissione(); return; }
   });
   document.addEventListener('change', function (ev) {
     var t = ev.target, m = M(); if (!t || !t.id && !t.dataset) return;
