@@ -342,6 +342,8 @@ nav button.segnala{color:var(--ambra)}
 .mda-cerca{min-height:46px}
 .mda-due{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.mda-due label{display:flex;flex-direction:column;gap:5px}
 .mda-pos{margin-top:8px;color:var(--turchese)}
+.mda-gemini-apri{display:flex;align-items:center;justify-content:center;text-decoration:none}
+.sheet textarea{display:block;width:100%;margin-top:5px;padding:10px;border:1px solid var(--bordo-forte);border-radius:10px;background:var(--notte2);color:var(--chiaro);font:13px/1.4 var(--mono);resize:vertical}
 .mda-consigliati{display:flex;flex-direction:column;gap:6px;margin-top:12px}
 .mda-consiglio{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;border:1px solid var(--bordo-forte);border-radius:12px;background:var(--velo);padding:10px 12px;color:var(--chiaro)}
 .mda-consiglio b{font:600 14.5px/1.25 var(--display)}.mda-consiglio span{font-size:12.5px;color:var(--tenue)}
@@ -1456,6 +1458,65 @@ svg.mappa{width:100%;height:auto;display:block}
     return righe.sort(function (a, b) { return (b.raggiungibile - a.raggiungibile) || b.punti - a.punti; });
   }
 
+  // ------------------------------------------------------------ documenti di supporto e «Chiedi a Gemini»
+  /**
+   * Da un documento di supporto (un altro master, un file verificato) i dati utili al controllo, abbinati alle sedi
+   * del master per comune, nome e indirizzo (non per protocollo: nei file intermedi i protocolli possono aver perso cifre).
+   * -> { perSede: { sedeKey: { fascia, chiusura, statoGoogle, noteGoogle, lat, lon } }, righe, abbinate, campi }
+   */
+  function datiDiSupporto(schedeMaster, intestazioni, righe) {
+    var sup = leggiMaster(intestazioni, righe);
+    if (!sup.ok) return { ok: false, mancanti: sup.mancanti, perSede: {}, righe: righe.length, abbinate: 0, campi: [] };
+    var sediMaster = {}; schedeMaster.forEach(function (s) { sediMaster[sedeDi(s)] = 1; });
+    var perSede = {}, campi = {}, abbinate = 0;
+    sup.schede.forEach(function (s) {
+      var k = sedeDi(s);
+      if (!sediMaster[k]) return;
+      var d = perSede[k] || (perSede[k] = {});
+      ['fascia', 'chiusura', 'statoGoogle', 'noteGoogle'].forEach(function (c) { if (!vuoto(s[c]) && !d[c]) { d[c] = s[c]; campi[c] = 1; } });
+      if (s.lat != null && d.lat == null) { d.lat = s.lat; d.lon = s.lon; campi.posizione = 1; }
+      abbinate++;
+    });
+    Object.keys(perSede).forEach(function (k) { if (!Object.keys(perSede[k]).length) delete perSede[k]; });
+    return { ok: true, perSede: perSede, righe: sup.righeLette, abbinate: abbinate, sediConDati: Object.keys(perSede).length, campi: Object.keys(campi) };
+  }
+
+  /**
+   * Domanda per Gemini sugli orari di uno o più locali. Chiede solo dati verificati con la fonte e un formato fisso;
+   * se il dato non è verificabile, Gemini deve scrivere NON VERIFICATO (nessuna invenzione).
+   * locali: [{ nome, indirizzo, comune, tipologia }]
+   */
+  function domandaGemini(locali) {
+    return [
+      'Cerca sul web gli orari di apertura e i giorni di chiusura attuali di questi locali in Italia.',
+      'Regole obbligatorie:',
+      '- Usa solo informazioni verificate da una fonte (scheda Google Maps, sito o pagina social ufficiale del locale) e indica la fonte.',
+      '- Se non trovi un dato verificato, NON inventarlo e NON dedurlo dalla tipologia: scrivi NON VERIFICATO.',
+      '- Se il locale risulta chiuso definitivamente o temporaneamente, scrivilo in ORARI.',
+      '- Rispondi SOLO con una riga per locale, senza altro testo, in questo formato esatto:',
+      'N | ORARI: Lun-Ven: 09:00 - 13:00, 16:00 - 20:00; Sab: 09:00 - 13:00 | CHIUSURA: Domenica | FONTE: <indirizzo web o nome della fonte> | VERIFICATO: SI',
+      '- Per un locale non verificabile: N | ORARI: NON VERIFICATO | CHIUSURA: NON VERIFICATO | FONTE: - | VERIFICATO: NO',
+      '',
+      'Locali:'
+    ].concat(locali.map(function (l, i) { return (i + 1) + '. ' + l.nome + ' · ' + indirizzoPulito(l.indirizzo, l.comune) + (l.tipologia ? ' · ' + l.tipologia : ''); })).join('\n');
+  }
+
+  /** Risposta di Gemini -> { n: { fascia, chiusura, fonte } } solo per le righe VERIFICATO: SI con orari leggibili. */
+  function leggiRispostaGemini(testo, quanti) {
+    var out = {}, scartate = 0;
+    String(testo || '').split(/\r?\n/).forEach(function (riga) {
+      var m = riga.match(/^\s*\**\s*(\d+)[.)]?\s*\|\s*ORARI:\s*(.*?)\s*\|\s*CHIUSURA:\s*(.*?)\s*\|\s*FONTE:\s*(.*?)\s*\|\s*VERIFICATO:\s*(S[IÌ]|NO)\b/i);
+      if (!m) return;
+      var n = +m[1];
+      if (n < 1 || (quanti && n > quanti)) return;
+      var verificato = /^s/i.test(m[5]) && !/non verificato/i.test(m[2]) && m[4] && m[4] !== '-';
+      var orari = leggiOrari(m[2]);
+      if (!verificato || orari.stato === 'sconosciuto') { scartate++; return; }
+      out[n] = { fascia: m[2].trim(), chiusura: /non verificato/i.test(m[3]) ? '' : m[3].trim(), fonte: m[4].trim() };
+    });
+    return { perNumero: out, accettate: Object.keys(out).length, scartate: scartate };
+  }
+
   // ------------------------------------------------------------ passaggio tra ARGO e IRIDE (stessa persona, senza rientrare)
   /** Da ARGO a IRIDE: chi è abilitato agli accertamenti (in IRIDE registra gli esiti), l'Area Manager
    *  (in IRIDE può inviare segnalazioni; gli esiti restano a chi è nella squadra) e l'amministratore della demo. */
@@ -1756,6 +1817,7 @@ svg.mappa{width:100%;height:auto;display:block}
     riconosciColonneMaster: riconosciColonneMaster, leggiMaster: leggiMaster, vuoto: vuoto, inItinerario: inItinerario, statoScheda: statoScheda,
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
+    datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
     viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
@@ -3166,6 +3228,7 @@ window.avviaMda = function () {
   var tab = 'itin', data = oggi(), giroSel = null, pos = null, osserva = null, posMsg = '', cerca = '', filtroComune = '', geoInCorso = null, tendinaAperta = false;
   // Quali schede formano gli itinerari (scelta dell'operatore, come nell'app di riferimento):
   // «da» = validate da accertare (Validata, non accentrata, senza atto) · «validate» = tutte le validate, anche già accertate · «pagate» = pagate, anche con atto
+  var perGemini = [];   // tappe del giro aperto senza orari, per «Chiedi a Gemini gli orari mancanti»
   var INSIEMI = [['da', 'Validate da accertare'], ['validate', 'Validate'], ['pagate', 'Pagate']];
   function insieme(m) { return m.insieme || 'da'; }
   function nelInsieme(m, s) {
@@ -3197,14 +3260,22 @@ window.avviaMda = function () {
   /** Chiuso nel giorno di uscita? Segnalazione «chiuso oggi», Stato Google «chiuso…», oppure giorno di chiusura = giorno di uscita.
    *  L'operatore può includerlo lo stesso («verifica sul posto»). */
   /** Orari della sede: quelli corretti a mano, poi quelli del master, poi quelli di OpenStreetMap. */
+  function supportoDi(m, key) { return (m.supporto || {})[key] || {}; }
+  function geminiDi(m, key) { return (m.gemini || {})[key] || {}; }
+  /** Fonte degli orari della sede, in ordine: a mano, master, documenti di supporto, Gemini (solo verificati), OpenStreetMap. */
+  function fonteOrari(m, sede) {
+    var sg = segnalaDi(m, sede.key), s0 = sede.schede[0] || {}, su = supportoDi(m, sede.key), ge = geminiDi(m, sede.key), osm = m.geo[sede.key] && m.geo[sede.key].orari;
+    var cand = [[sg.fascia, 'scritti a mano'], [s0.fascia, 'master'], [su.fascia, 'documento di supporto'], [ge.fascia, 'Gemini · ' + (ge.fonte || '')], [osm, 'OpenStreetMap']];
+    for (var i = 0; i < cand.length; i++) if (cand[i][0] && R.leggiOrari(cand[i][0]).stato !== 'sconosciuto') return { testo: cand[i][0], fonte: cand[i][1] };
+    return { testo: sg.fascia || s0.fascia || su.fascia || '', fonte: '' };
+  }
   function orariDi(m, sede) {
-    var sg = segnalaDi(m, sede.key), s0 = sede.schede[0] || {}, osm = m.geo[sede.key] && m.geo[sede.key].orari;
-    var o = R.leggiOrari(sg.fascia || s0.fascia || '');
-    if (o.stato === 'sconosciuto' && osm) o = R.leggiOrari(osm);
-    if (/chius[oa] (definitivamente|temporaneamente)/i.test(s0.statoGoogle || '')) o = { stato: 'chiuso', giorni: {} };
+    var s0 = sede.schede[0] || {}, su = supportoDi(m, sede.key);
+    var o = R.leggiOrari(fonteOrari(m, sede).testo);
+    if (/chius[oa] (definitivamente|temporaneamente)/i.test((s0.statoGoogle || '') + ' ' + (su.statoGoogle || ''))) o = { stato: 'chiuso', giorni: {} };
     return o;
   }
-  function chiusuraDi(m, sede) { return segnalaDi(m, sede.key).chiusura || (sede.schede[0] || {}).chiusura || ''; }
+  function chiusuraDi(m, sede) { return segnalaDi(m, sede.key).chiusura || (sede.schede[0] || {}).chiusura || supportoDi(m, sede.key).chiusura || geminiDi(m, sede.key).chiusura || ''; }
   /** Stato orario: adesso se il giorno di uscita è oggi, altrimenti per l'intera giornata scelta. */
   function statoDi(m, sede) {
     var sg = segnalaDi(m, sede.key);
@@ -3280,7 +3351,7 @@ window.avviaMda = function () {
     var h = '<div class="mda-barra"><div class="mda-righe">' +
       (S.mandatarie.length ? '<select id="sel-mand" aria-label="Mandataria">' + S.mandatarie.map(function (x) { return '<option value="' + x.id + '"' + (m && x.id === m.id ? ' selected' : '') + '>' + esc(x.nome) + '</option>'; }).join('') + '</select>' : '') +
       '<button class="az piccolo" id="agg-mand" aria-label="Aggiungi mandataria">' + ic('piu') + (S.mandatarie.length ? '' : 'Aggiungi mandataria') + '</button>' +
-      (m ? '<button class="az piccolo" id="carica-master">' + ic('scarica') + 'Carica master</button><button class="az piccolo" id="dal-drive" aria-label="Carica master dal Drive">Drive</button>' : '') + '</div>';
+      (m ? '<button class="az piccolo" id="carica-master">' + ic('scarica') + 'Carica master</button><button class="az piccolo" id="carica-supporto" aria-label="Carica un documento di supporto">Supporto</button><button class="az piccolo" id="dal-drive" aria-label="Carica master dal Drive">Drive</button>' : '') + '</div>';
     if (m) {
       var mancanti = m.schede.length ? sediSenzaPosizione(m).length : 0;
       h += '<p class="mda-info">' + (m.master ? esc(m.master.file) + ' · ' + esc(m.master.caricatoIl) + ' · ' + m.master.schede + ' schede' : 'File atteso: ' + esc(R.nomeFileMaster(m.nome)) + '.xls o .xlsx') +
@@ -3367,6 +3438,9 @@ window.avviaMda = function () {
       aggiunte.map(function (x) { return x.daGiro.codice; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).join(', ') + ' (giro di giornata).</p>';
     if (tr.tratte.length) h += '<p class="sub">' + esc(g.codice) + ' in Maps · ' + lavorabili.length + ' visite in ' + tr.tratte.length + (tr.tratte.length === 1 ? ' tratta' : ' tratte') + '. Al termine di ogni tratta torna qui e apri la successiva.' + (pos ? ' Ordine dalla tua posizione.' : '') + '</p><div class="mda-tratte">' +
       tr.tratte.map(function (t, i) { return '<a class="az" target="_blank" rel="noopener" href="' + esc(t.url) + '">' + ic('naviga') + 'Tratta ' + (i + 1) + ' di ' + tr.tratte.length + ' · tappe ' + t.tappe.map(function (n) { return n + 1; }).join(', ') + '</a>'; }).join('') + '</div>';
+    var senzaOrari = ordinate.filter(function (x) { return orariDi(m, x).stato === 'sconosciuto'; });
+    if (senzaOrari.length) h += '<button class="az" id="gemini-giro">Chiedi a Gemini gli orari mancanti (' + senzaOrari.length + ')</button>';
+    perGemini = senzaOrari;
     if (tr.escluse.length) h += '<p class="sub">Senza destinazione utilizzabile (' + tr.escluse.length + '): ' + tr.escluse.map(function (n) { return esc(lavorabili[n].nome); }).join(', ') + '. Usa «Segna ingresso con GPS» quando sei sul posto.</p>';
     if (chiuse.length) h += '<p class="sub mda-chiuse">' + ic('avviso') + ' Chiusi nel giorno di uscita o segnalati chiusi (' + chiuse.length + '): ' + chiuse.map(function (x) { return esc(x.nome); }).join(', ') + '. Fuori dalle tratte di oggi, restano da lavorare; per includerli apri «Orari e segnalazioni» e spunta «Verifica sul posto oggi».</p>';
     h += '</section>';
@@ -3415,7 +3489,9 @@ window.avviaMda = function () {
       '<label class="et">Giorno di chiusura<input data-chiusura="' + esc(x.key) + '" value="' + esc(chiusura || '') + '" placeholder="Es. lunedì"></label>' +
       '<label class="spunta"><input type="checkbox" data-chiuso-oggi="' + esc(x.key) + '"' + (sg.chiusoOggi === data ? ' checked' : '') + '> Chiuso oggi</label>' +
       '<label class="spunta"><input type="checkbox" data-cessazione="' + esc(x.key) + '"' + (sg.cessazione ? ' checked' : '') + '> Possibile cessazione</label>' +
-      '<label class="spunta"><input type="checkbox" data-includi="' + esc(x.key) + '"' + (sg.includi === data ? ' checked' : '') + '> Verifica sul posto oggi anche se segnalato chiuso</label></div></details>' +
+      '<label class="spunta"><input type="checkbox" data-includi="' + esc(x.key) + '"' + (sg.includi === data ? ' checked' : '') + '> Verifica sul posto oggi anche se segnalato chiuso</label>' +
+      (fonteOrari(m, x).fonte ? '<p class="sub">Orari: ' + esc(fonteOrari(m, x).fonte) + '</p>' : '') +
+      '<button class="az" data-gemini="' + esc(x.key) + '">Chiedi a Gemini orari e chiusura</button></div></details>' +
       '<div class="mda-nav"><a class="az" target="_blank" rel="noopener" href="' + esc(naviga) + '">' + ic('naviga') + (p ? 'Naviga alle coordinate' : 'Naviga per indirizzo') + '</a>' +
       '<button class="link" data-ingresso="' + esc(x.key) + '">Segna ingresso con GPS</button>' +
       '<a class="link" target="_blank" rel="noopener" href="' + esc(cercaOrari(x)) + '">Cerca orari sul web</a></div>' +
@@ -3521,6 +3597,61 @@ window.avviaMda = function () {
       salva(); o.remove(); render();
       toast(esito ? 'Controllo salvato: ' + esito + ' · la scheda esce dal giro' : 'Senza esito: la scheda resta da lavorare');
     });
+  }
+
+  // ------------------------------------------------------------ «Chiedi a Gemini»: domanda pronta, risposta incollata
+  // Usa l'abbonamento Gemini del proponente (app o sito): IRIDE copia la domanda e apre Gemini; la risposta, in formato
+  // fisso, si incolla qui. Si accettano solo orari dichiarati verificati con la fonte; il resto resta «da verificare».
+  function apriGemini(sedi) {
+    var m = M(), elenco = sedi.slice(0, 15);
+    var domanda = R.domandaGemini(elenco.map(function (x) { return { nome: x.nome, indirizzo: x.indirizzo, comune: x.comune, tipologia: x.tipologia }; }));
+    var o = document.createElement('div'); o.className = 'ovl';
+    o.innerHTML = '<div class="sheet"><div class="shead"><b>Chiedi a Gemini</b><button type="button" class="x" data-close aria-label="Chiudi">' + ic('chiudi') + '</button></div>' +
+      '<p class="sub">1) Tocca <b>Copia e apri Gemini</b>, incolla la domanda e inviala. 2) Copia la risposta di Gemini e incollala qui sotto. ' +
+      'IRIDE prende solo gli orari che Gemini dichiara verificati con una fonte' + (sedi.length > 15 ? ' (primi 15 locali; poi ripeti per gli altri)' : '') + '.</p>' +
+      '<label>Domanda (' + elenco.length + (elenco.length === 1 ? ' locale' : ' locali') + ')<textarea readonly rows="6" data-domanda>' + esc(domanda) + '</textarea></label>' +
+      '<a class="save mda-gemini-apri" href="https://gemini.google.com/app" target="_blank" rel="noopener" data-copia>Copia e apri Gemini</a>' +
+      '<label>Risposta di Gemini<textarea rows="6" data-risposta placeholder="Incolla qui le righe 1 | ORARI: … | CHIUSURA: … | FONTE: … | VERIFICATO: SI"></textarea></label>' +
+      '<button class="save" data-applica>Usa la risposta</button></div>';
+    document.body.appendChild(o);
+    o.addEventListener('click', function (ev) {
+      if (ev.target === o || ev.target.closest('[data-close]')) { o.remove(); return; }
+      if (ev.target.closest('[data-copia]')) {
+        var ta = o.querySelector('[data-domanda]');
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(domanda).then(function () { toast('Domanda copiata: incollala in Gemini'); }, function () { ta.select(); toast('Seleziona e copia la domanda a mano'); });
+        else { ta.select(); try { document.execCommand('copy'); } catch (e) { /* */ } }
+        return;   // il link apre Gemini in una nuova scheda
+      }
+      if (ev.target.closest('[data-applica]')) {
+        var r = R.leggiRispostaGemini(o.querySelector('[data-risposta]').value, elenco.length);
+        m.gemini = m.gemini || {};
+        Object.keys(r.perNumero).forEach(function (n) { var x = elenco[n - 1]; m.gemini[x.key] = Object.assign({ data: oggi() }, r.perNumero[n]); });
+        salva(); o.remove(); render();
+        toast(r.accettate + ' orari verificati presi' + (r.scartate ? ' · ' + r.scartate + ' non verificati, restano da verificare' : '') + (r.accettate + r.scartate ? '' : ': risposta non riconosciuta, controlla il formato'));
+      }
+    });
+  }
+
+  // ------------------------------------------------------------ documenti di supporto (altri master, file verificati)
+  function caricaSupporto(file) {
+    var m = M();
+    window.LettoreFile.leggiFile(file).then(function (t) {
+      var r = R.trovaIntestazione(t.tutte);
+      var intest = (t.tutte[r] || []).map(function (h, i) { return String(h || '').trim() || 'Colonna ' + (i + 1); });
+      var d = R.datiDiSupporto(tutteLeSchede(m), intest, t.tutte.slice(r + 1));
+      if (!d.ok) { toast('Documento non riconosciuto: mancano le colonne ' + d.mancanti.join(', ')); return; }
+      var nomi = { fascia: 'fasce orarie', chiusura: 'giorni di chiusura', statoGoogle: 'stato del locale', noteGoogle: 'note', posizione: 'posizioni' };
+      DB.chiedi({ titolo: 'Usare «' + file.name + '» come supporto?', testo: 'Righe lette: ' + d.righe + ' · locali del master trovati: ' + d.abbinate + ' · con dati utili: ' + d.sediConDati +
+        (d.campi.length ? ' (' + d.campi.map(function (c) { return nomi[c] || c; }).join(', ') + ')' : '') + '. Il master non cambia: questi dati si aggiungono dove mancano.', conferma: 'Usa' }, function () {
+        m.supporto = m.supporto || {};
+        Object.keys(d.perSede).forEach(function (k) {
+          m.supporto[k] = Object.assign({}, d.perSede[k], m.supporto[k] || {});
+          if (d.perSede[k].lat != null && !m.geo[k]) m.geo[k] = { lat: d.perSede[k].lat, lon: d.perSede[k].lon, livello: 'file', t: Date.now() };
+        });
+        (m.documenti = m.documenti || []).push({ file: file.name, caricatoIl: oggi(), sedi: d.sediConDati });
+        salva(); render(); toast('Documento di supporto usato: dati per ' + d.sediConDati + ' locali');
+      });
+    }).catch(function (err) { toast(err.message || 'File non leggibile'); });
   }
 
   // ------------------------------------------------------------ caricamento del master
@@ -3733,6 +3864,12 @@ window.avviaMda = function () {
       var inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.xls,.xlsx,.csv';
       inp.addEventListener('change', function () { if (inp.files[0]) caricaMaster(inp.files[0]); }); inp.click(); return;
     }
+    if (b.id === 'carica-supporto') {
+      var ins = document.createElement('input'); ins.type = 'file'; ins.accept = '.xls,.xlsx,.csv';
+      ins.addEventListener('change', function () { if (ins.files[0]) caricaSupporto(ins.files[0]); }); ins.click(); return;
+    }
+    if (b.dataset.gemini) { var mm = M(), c3 = calcola(mm), sede = null; c3.giri.forEach(function (g) { g.sedi.forEach(function (x) { if (x.key === b.dataset.gemini) sede = x; }); }); if (sede) apriGemini([sede]); return; }
+    if (b.id === 'gemini-giro') { if (perGemini.length) apriGemini(perGemini); return; }
     if (b.id === 'dal-drive') {
       if (!window.DriveIride) { toast('Drive non disponibile'); return; }
       window.DriveIride.scegliFile().then(function (f) { if (f) caricaMaster(f); }, function (e) { toast(e.message); });
