@@ -307,6 +307,8 @@ nav button.segnala{color:var(--ambra)}
 .anon{display:flex;gap:9px;background:var(--turchese-velo);border-radius:10px;padding:10px;font-size:14px;margin:10px 0 0;line-height:1.4}
 .anon .ic{color:var(--turchese);margin-top:1px}
 .save{margin-top:14px;width:100%;min-height:50px;border:0;border-radius:12px;background:var(--turchese);color:var(--su-accento);font-weight:700;font-size:16px}
+.save[disabled]{opacity:.45;cursor:not-allowed}
+.sheet>.az{width:100%;margin-top:12px}
 .anteprima{display:block;max-width:100%;border-radius:10px;margin-top:8px}
 
 /* ---- lavoro da elenco ---- */
@@ -632,6 +634,11 @@ svg.mappa{width:100%;height:auto;display:block}
 .cifra b{display:block;font:600 24px/1 var(--display)}
 .cifra span{font-size:11.5px;color:var(--tenue)}
 .cifra.calda b{color:var(--ambra)}.cifra.fresca b{color:var(--turchese)}
+.cifre.mda-cifre-argo{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.cifra.perso{border-style:dashed}.cifra.perso b{color:var(--rosso)}
+.mda-man-testa{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:6px 14px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bordo)}
+.mda-giorno-tit{margin:16px 0 8px}
+.mda-voci-cella{display:flex;flex-direction:column;gap:4px}
 
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(16px);background:var(--pannello-forte);border:1px solid var(--bordo-forte);color:var(--chiaro);padding:10px 18px;border-radius:999px;font-size:14px;opacity:0;transition:.22s;pointer-events:none;z-index:30}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -1699,6 +1706,139 @@ svg.mappa{width:100%;height:auto;display:block}
     };
   }
 
+  /**
+   * Chiave univoca di un esito MDA inviato ad ARGO: mandataria + protocollo (o id per locali aggiunti a mano).
+   * Serve a evitare doppioni al reinvio (stesso protocollo nella stessa mandataria = aggiorna).
+   */
+  function chiaveEsitoMda(e) {
+    var man = normalizza(e && e.mandataria);
+    var prot = String((e && e.protocollo) || '').trim();
+    if (prot) return man + '|p|' + prot;
+    var id = String((e && e.id) || '').trim();
+    if (id) return man + '|id|' + id;
+    return man + '|s|' + sedeDi(e || {});
+  }
+
+  /**
+   * Prepara gli esiti della mandataria attiva di IRIDE · MDA per l'invio ad ARGO (DECISIONI 22, compito 004).
+   * Copia solo i dati operativi del controllo (esito, data, note, protocollo, locale, comune, indirizzo, importo);
+   * organizzatore, partita IVA e codice fiscale restano sul dispositivo. Nessuna metrica sulle persone.
+   */
+  function preparaEsitiMdaPerArgo(mandataria, inviatoIl) {
+    if (!mandataria) return [];
+    var nome = String(mandataria.nome || '').trim();
+    var schede = (mandataria.schede || []).concat(mandataria.manuali || []);
+    var esiti = mandataria.esiti || {};
+    var out = [];
+    schede.forEach(function (s) {
+      var e = esiti[s.id];
+      if (!e || !e.esito) return;
+      out.push({
+        id: s.protocollo || s.id,
+        protocollo: s.protocollo || '',
+        mandataria: nome,
+        locale: s.locale || '',
+        comune: s.comune || '',
+        indirizzo: s.indirizzo || '',
+        importo: s.importo == null ? null : s.importo,
+        esito: e.esito,
+        data: e.data || '',
+        note: e.note || '',
+        inviatoIl: inviatoIl || ''
+      });
+    });
+    return out;
+  }
+
+  /**
+   * Unisce gli esiti MDA appena inviati con quelli già presenti in ARGO senza mutare gli elenchi in ingresso.
+   * Reinviare non duplica: stesso protocollo nella stessa mandataria = aggiorna.
+   * -> { esiti, aggiunti, aggiornati, totaleInviati }
+   */
+  function unisciEsitiMda(esistenti, nuovi) {
+    var out = [], indice = {}, aggiunti = 0, aggiornati = 0;
+    (esistenti || []).forEach(function (x) {
+      var k = chiaveEsitoMda(x);
+      if (indice[k] != null) out[indice[k]] = Object.assign({}, x);
+      else { indice[k] = out.length; out.push(Object.assign({}, x)); }
+    });
+    (nuovi || []).forEach(function (x) {
+      var k = chiaveEsitoMda(x);
+      if (indice[k] != null) { out[indice[k]] = Object.assign({}, x); aggiornati++; }
+      else { indice[k] = out.length; out.push(Object.assign({}, x)); aggiunti++; }
+    });
+    return { esiti: out, aggiunti: aggiunti, aggiornati: aggiornati, totaleInviati: (nuovi || []).length };
+  }
+
+  /** District a cui appartiene un esito MDA (dal comune, oppure dal nome della mandataria); null se fuori dai District noti. */
+  function districtPerEsitoMda(esito, districts) {
+    if (!esito) return null;
+    if (esito.district) return esito.district;
+    var ds = districts || [];
+    var com = normalizza(esito.comune);
+    if (com) {
+      for (var i = 0; i < ds.length; i++) {
+        if ((ds[i].comuni || []).some(function (c) { return normalizza(c) === com; })) return ds[i].id;
+      }
+    }
+    var man = normalizza(esito.mandataria);
+    if (man) {
+      for (var j = 0; j < ds.length; j++) {
+        if (normalizza(ds[j].mandataria) === man || normalizza(ds[j].nome) === man) return ds[j].id;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Filtra gli esiti MDA visibili in ARGO secondo le stesse regole di perimetro di esiti e segnalazioni (vedeDistrict):
+   * Area Manager, Presidio e amministratore vedono tutto; District Manager e accesso «lettura» solo il proprio District;
+   * chi non ha accesso ad ARGO non vede nulla.
+   */
+  function esitiMdaVisibili(persona, esitiMda, districts) {
+    if (!persona || persona.argo === 'nessuno') return [];
+    return (esitiMda || []).filter(function (e) {
+      return vedeDistrict(persona, districtPerEsitoMda(e, districts));
+    });
+  }
+
+  /**
+   * Riepilogo degli esiti MDA ricevuti in ARGO, raggruppati per mandataria e giorno con le stesse regole di registroVisite
+   * (una riga per locale, non visitati a parte, AC effettivi, valore accertato e valore perso solo per chiusure definitive).
+   * -> { mandatarie: [{ nome, ultimoInvio, schedeTotali, registro }], totale, ultimoInvio }
+   */
+  function riepilogoEsitiMda(esitiMda) {
+    var lista = esitiMda || [];
+    var calcolaRegistro = function (voci) {
+      var schede = [], mappa = {};
+      voci.forEach(function (x, i) {
+        var sid = chiaveEsitoMda(x) + '#' + i;
+        schede.push({
+          id: sid, protocollo: x.protocollo || x.id || '', locale: x.locale || '', comune: x.comune || '',
+          indirizzo: x.indirizzo || '', importo: x.importo == null ? null : x.importo, mandataria: x.mandataria || '', inviatoIl: x.inviatoIl || ''
+        });
+        mappa[sid] = { esito: x.esito, data: x.data || '', note: x.note || '', inviatoIl: x.inviatoIl || '' };
+      });
+      return registroVisite(schede, mappa);
+    };
+    var perMan = {}, ordine = [], ultimoGlobale = '';
+    lista.forEach(function (x) {
+      var nome = String(x.mandataria || 'Senza mandataria').trim() || 'Senza mandataria';
+      var k = normalizza(nome) || 'senza';
+      if (!perMan[k]) { perMan[k] = { nome: nome, voci: [], ultimoInvio: '' }; ordine.push(k); }
+      perMan[k].voci.push(x);
+      if (x.inviatoIl && x.inviatoIl > perMan[k].ultimoInvio) perMan[k].ultimoInvio = x.inviatoIl;
+      if (x.inviatoIl && x.inviatoIl > ultimoGlobale) ultimoGlobale = x.inviatoIl;
+    });
+    var mandatarie = ordine.map(function (k) {
+      var g = perMan[k];
+      return { nome: g.nome, ultimoInvio: g.ultimoInvio, schedeTotali: g.voci.length, registro: calcolaRegistro(g.voci) };
+    }).sort(function (a, b) {
+      return String(b.ultimoInvio || '').localeCompare(String(a.ultimoInvio || '')) || a.nome.localeCompare(b.nome, 'it');
+    });
+    return { mandatarie: mandatarie, totale: calcolaRegistro(lista), ultimoInvio: ultimoGlobale };
+  }
+
   function applicaComuniManuali(schede, comuni) {
     schede.forEach(function (s) {
       var c = (comuni || {})[s.id];
@@ -2099,7 +2239,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, applicaComuniManuali: applicaComuniManuali, registroVisite: registroVisite, esitiDaSalvare: esitiDaSalvare, spostaDatiSede: spostaDatiSede, chiaviSede: chiaviSede, senzaNull: senzaNull, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, applicaComuniManuali: applicaComuniManuali, registroVisite: registroVisite, esitiDaSalvare: esitiDaSalvare, chiaveEsitoMda: chiaveEsitoMda, preparaEsitiMdaPerArgo: preparaEsitiMdaPerArgo, unisciEsitiMda: unisciEsitiMda, districtPerEsitoMda: districtPerEsitoMda, esitiMdaVisibili: esitiMdaVisibili, riepilogoEsitiMda: riepilogoEsitiMda, spostaDatiSede: spostaDatiSede, chiaviSede: chiaviSede, senzaNull: senzaNull, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -4275,7 +4415,7 @@ window.avviaMda = function () {
   function nuovaMissione(m, poi) {
     var d = R.esitiDaSalvare(m.esiti, m.salvatoIl);
     if (!d.totali) { poi(); return; }
-    var azzera = function () { m.esiti = {}; m.N = 0; m.salvatoIl = null; poi(); };
+    var azzera = function () { m.esiti = {}; m.N = 0; m.salvatoIl = null; m.inviatoAdArgoIl = null; poi(); };
     var o = document.createElement('div'); o.className = 'ovl';
     o.innerHTML = '<div class="sheet"><div class="shead"><b>' + (d.nonSalvati ? 'Ci sono ' + d.nonSalvati + (d.nonSalvati === 1 ? ' esito non salvato' : ' esiti non salvati') : 'Nuova missione') + '</b>' +
       '<button type="button" class="x" data-close aria-label="Chiudi">' + ic('chiudi') + '</button></div>' +
@@ -4482,11 +4622,16 @@ window.avviaMda = function () {
   function fineMissione() {
     var m = M(), c = calcola(m), tutte = tutteLeSchede(m);
     var conEsito = tutte.filter(function (s) { return esitoDi(m, s.id); }), diOggi = conEsito.filter(function (s) { return m.esiti[s.id].data === oggi(); });
+    var oraInvio = function (iso) { return new Date(iso).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); };
     var o = document.createElement('div'); o.className = 'ovl';
     o.innerHTML = '<div class="sheet"><div class="shead"><b>Fine missione · ' + esc(m.nome) + '</b><button type="button" class="x" data-close aria-label="Chiudi">' + ic('chiudi') + '</button></div>' +
       '<p class="sub">Esiti registrati oggi: <b>' + diOggi.length + '</b> · in tutto: <b>' + conEsito.length + '</b>. Salvali fuori dal browser <b>prima</b> di cancellare schede o cronologia: ' +
       'la memoria del browser è l\'unico posto dove stanno.</p>' +
-      '<button class="save" data-drive>Salva su Google Drive</button>' +
+      '<button class="save" data-invia-argo' + (conEsito.length ? '' : ' disabled') + '>Invia ad ARGO</button>' +
+      '<p class="sub"><b>Invio simulato (stesso browser)</b>: copia gli esiti di «' + esc(m.nome) + '» in ARGO (sezione «Esiti dal campo (MDA)»). Reinviare aggiorna gli stessi protocolli senza duplicare.' +
+      (m.inviatoAdArgoIl ? ' Ultimo invio: <b>' + esc(oraInvio(m.inviatoAdArgoIl)) + '</b>.' : '') +
+      (conEsito.length ? '' : ' Registra almeno un esito per inviarlo.') + '</p>' +
+      '<button class="az forte" data-drive>Salva su Google Drive</button>' +
       '<p class="sub">IRIDE scrive l\'Excel completo e la copia di sicurezza nella cartella <b>ARGO › ' + esc(m.nome) + '</b>: la prima volta la scegli tu, poi la ricorda. ' +
       'Salvando di nuovo nello stesso giorno, i file si aggiornano.' + (window.DriveIride && window.DriveIride.motivo() ? ' <i>' + esc(window.DriveIride.motivo()) + '</i>' : '') +
       ' <button type="button" class="link" data-cambia-cartella>Cambia cartella</button></p>' +
@@ -4499,6 +4644,25 @@ window.avviaMda = function () {
     var scarica = function (fs) { fs.forEach(function (f, i) { setTimeout(function () { salvaFile(f.name, f); }, i * 700); }); };
     o.addEventListener('click', function (ev) {
       if (ev.target === o || ev.target.closest('[data-close]')) { o.remove(); return; }
+      if (ev.target.closest('[data-invia-argo]')) {
+        // DECISIONI 22 / compito 004: invio simulato nello stesso browser (nel sistema definitivo passa dal server)
+        var oraIso = new Date().toISOString();
+        var pronti = R.preparaEsitiMdaPerArgo(m, oraIso);
+        if (!pronti.length) { toast('Nessun esito registrato da inviare ad ARGO'); return; }
+        DB.carica();
+        var res = R.unisciEsitiMda(DB.stato.esitiMda || [], pronti);
+        DB.stato.esitiMda = res.esiti;
+        DB.annota(io ? io.id : 'iride-mda', 'esiti MDA inviati da IRIDE', { mandataria: m.nome, inviati: res.totaleInviati, aggiunti: res.aggiunti, aggiornati: res.aggiornati });
+        DB.salva();
+        m.salvatoIl = oraIso; m.inviatoAdArgoIl = oraIso; salva(); o.remove(); render();
+        var dettaglio = res.aggiunti && res.aggiornati ? res.aggiunti + ' nuovi, ' + res.aggiornati + ' aggiornati'
+          : res.aggiornati ? res.aggiornati + ' aggiornati (nessun doppione)'
+          : res.aggiunti + (res.aggiunti === 1 ? ' nuovo' : ' nuovi');
+        toast(DB.memoriaDisponibile
+          ? 'Inviati ' + res.totaleInviati + ' esiti ad ARGO (' + dettaglio + ') · invio simulato'
+          : 'Invio solo in questa sessione: il browser non consente la memoria condivisa');
+        return;
+      }
       if (ev.target.closest('[data-telefono]')) { scarica(file()); m.salvatoIl = new Date().toISOString(); salva(); toast('File salvati in Download'); return; }
       if (ev.target.closest('[data-cambia-cartella]')) { if (window.DriveIride) window.DriveIride.cambiaCartella(m.nome); toast('Al prossimo salvataggio scegli di nuovo la cartella'); return; }
       if (ev.target.closest('[data-drive]')) {
@@ -4747,10 +4911,17 @@ window.avviaArgo = function () {
   const uno = (x, d = 1) => (x == null ? '–' : (Math.round(x * 10 ** d) / 10 ** d).toLocaleString('it-IT'));
   const dataIt = (iso) => (iso ? new Date(iso).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '–');
   const dataOraIt = (iso) => (iso ? new Date(iso).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '–');
+  const giornoIt = (d) => (d ? new Date(d + 'T12:00').toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : 'Senza data');
+  const euro = (n) => (n == null ? '–' : n.toLocaleString('it-IT', { style: 'currency', currency: 'EUR' }));
   const giorniTra = (a, b) => Math.round((new Date(b) - new Date(a)) / 864e5);
   const nomePersona = (id) => (DB.persona(id) || { nome: id }).nome;
   const nomeLocale = (id) => { const l = DB.locale(id); return l ? l.nome : id; };
   const ESITO = { A: 'Accertato', L: 'Con licenza (già prima)', X: 'Non accertato', N: 'NA' };
+  const ESITO_MDA = {
+    AC: ['AC', 'salvia'], 'Locale chiuso D': ['Locale chiuso D', 'mattone'], 'Locale chiuso T': ['Locale chiuso T', 'ambra'],
+    'Apparecchi rimossi': ['Apparecchi rimossi', 'mare'], 'Musica non tutelata': ['Musica non tutelata', 'mare'],
+    NA: ['NA', 'ambra'], 'Locale non visitato': ['Locale non visitato', '']
+  };
   const STATO_MIS = { richiesta: ['Richiesta', 'ambra'], approvata: ['Approvata · al Presidio', 'mare'], in_preparazione: ['In preparazione', 'mare'],
     proposta: ['Proposta · in approvazione', 'ambra'], autorizzata: ['Autorizzata', 'salvia'], eseguita: ['Eseguita · debriefing', 'ambra'], chiusa: ['Chiusa', ''], annullata: ['Annullata', 'mattone'] };
   const STATO_OPP = { aperta: ['Aperta', 'ambra'], da_accertare: ['Da accertare', 'mare'], scartata: ['Scartata', ''], assegnata: ['Assegnata', 'mare'],
@@ -4762,7 +4933,7 @@ window.avviaArgo = function () {
 
   let io = DB.persona(DB.personaAttiva('argo'));
   if (io && io.argo === 'nessuno') io = null;
-  let sezione = 'panoramica', selMissione = null, schedaLocali = 'censimento', cercaLocali = '';
+  let sezione = 'panoramica', selMissione = null, schedaLocali = 'censimento', cercaLocali = '', filtroMandMda = '';
   let comuneSel = null, primoIngresso = true;
   let menuTelefono = false;   // sul telefono il menu laterale si apre a tutto schermo dalla voce «Altro»
   const livelli = { rapporto: true, missioni: true, segnalazioni: true, opportunita: true, locali: false };
@@ -4844,7 +5015,7 @@ window.avviaArgo = function () {
   // ------------------------------------------------------------ impianto della pagina
   const VOCI = [
     ['panoramica', 'Panoramica'], ['missioni', 'Richieste e missioni'], ['opportunita', 'Opportunità'], ['segnalazioni', 'Segnalazioni'],
-    ['esiti', 'Esiti e correzioni'], ['sep', 'Territorio'], ['locali', 'Locali e licenze'], ['mda', 'MDA'], ['sep', 'Organizzazione'],
+    ['esiti', 'Esiti e correzioni'], ['esitiMda', 'Esiti dal campo (MDA)'], ['sep', 'Territorio'], ['locali', 'Locali e licenze'], ['mda', 'MDA'], ['sep', 'Organizzazione'],
     ['disponibilita', 'Disponibilità'], ['indicatori', 'Indicatori'], ['persone', 'Persone e permessi']
   ];
   function contaVoce(k) {
@@ -4865,7 +5036,7 @@ window.avviaArgo = function () {
     if (!io) { ingresso(); return; }
     document.title = 'ARGO · ' + io.nome;
     const persone = S().persone.filter((p) => p.argo !== 'nessuno');
-    const corpo = ({ panoramica, missioni, opportunita, segnalazioni, esiti, locali, mda, disponibilita, indicatori, persone: personeSez })[sezione]();
+    const corpo = ({ panoramica, missioni, opportunita, segnalazioni, esiti, esitiMda, locali, mda, disponibilita, indicatori, persone: personeSez })[sezione]();
     app.innerHTML = `<div class="argo ${primoIngresso && sezione === 'panoramica' ? 'entrata' : ''} ${menuTelefono ? 'menu-aperto' : ''}">
       <aside class="rail"><button class="chiudi-menu" data-menu>Chiudi il menu</button>
         <div class="marchio"><svg class="radar" viewBox="0 0 38 38" aria-hidden="true"><circle cx="19" cy="19" r="17" fill="none" stroke="currentColor" stroke-opacity=".4"/><circle cx="19" cy="19" r="11" fill="none" stroke="currentColor" stroke-opacity=".28"/><circle cx="19" cy="19" r="5" fill="none" stroke="currentColor" stroke-opacity=".28"/><g class="fascio"><path d="M19 19 L19 2 A17 17 0 0 1 33 10 Z" fill="currentColor" fill-opacity=".28"/><line x1="19" y1="19" x2="19" y2="2" stroke="currentColor" stroke-width="1.5"/></g><circle cx="27" cy="13" r="2" fill="#f4a83c"/></svg><div><b>ARGO</b><small>Cento occhi sul territorio</small></div></div>
@@ -5248,8 +5419,10 @@ window.avviaArgo = function () {
     const nuove = correzioniNonLette();
     const vedeReg = ['area', 'presidio', 'district'].includes(io.funzione); // il District vede solo il suo (filtro qui sotto)
     const reg = S().correzioni.filter((c) => vede(c.district));
+    const nMda = R.esitiMdaVisibili(io, S().esitiMda || [], S().districts).length;
     return `<div class="occhiello">Esiti e correzioni</div><h1 class="titolo">Ciò che torna dal campo</h1>
       <p class="sottotitolo">Esiti interni registrati in IRIDE (l'accertamento ufficiale resta nell'app ufficiale). Arrivano subito, marcati «non rivisto» finché il Presidio non li guarda. Ogni correzione ha un motivo e resta nel registro.</p>
+      <div class="riga"><button class="btn chiaro piccolo" data-sez="esitiMda">Esiti dal campo (MDA)${nMda ? ' · ' + nMda : ''}</button></div><div class="spazio"></div>
       ${nuove.length ? `<div class="foglio" style="border-color:var(--ambra)"><h2>Correzioni</h2><p class="perche">Correzioni agli esiti del tuo District (questa sezione compare solo quando ce n'è una).</p>
         <table class="reg">${nuove.map((c) => `<tr><td>${esc(nomeLocale(c.locale))}</td><td>${esc(ESITO[c.prima])} → <b>${esc(ESITO[c.dopo])}</b></td><td>${esc(c.motivo)}</td><td>${esc(nomePersona(c.chi))} · ${dataOraIt(c.quando)}</td></tr>`).join('')}</table>
         <div class="spazio"></div><button class="btn piccolo" data-letto>Segna come lette</button></div><div class="spazio"></div>` : ''}
@@ -5269,6 +5442,61 @@ window.avviaArgo = function () {
       <label class="campo">Nuovo esito<select name="valore">${Object.entries(ESITO).map(([k, v]) => `<option value="${k}" ${k === e.valore ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
       <label class="campo">Motivo (obbligatorio)<input name="motivo" placeholder="Es. tasto sbagliato, confermato al telefono con l'accertatore"></label>
       <div class="riga"><button class="btn ambra">Correggi</button><button type="button" class="btn chiaro" data-chiudi>Annulla</button></div><p class="perche" data-errori></p></form>`);
+  }
+
+  // ------------------------------------------------------------ ESITI DAL CAMPO (MDA)
+  function esitiMda() {
+    const tutti = S().esitiMda || [];
+    const visibili = R.esitiMdaVisibili(io, tutti, S().districts);
+    const riep = R.riepilogoEsitiMda(visibili);
+    if (filtroMandMda && !riep.mandatarie.some((m) => m.nome === filtroMandMda)) filtroMandMda = '';
+    const mostrate = filtroMandMda ? riep.mandatarie.filter((m) => m.nome === filtroMandMda) : riep.mandatarie;
+    const t = filtroMandMda && mostrate[0] ? mostrate[0].registro.totali : riep.totale.totali;
+    const ultimo = filtroMandMda && mostrate[0] ? mostrate[0].ultimoInvio : riep.ultimoInvio;
+    const tipi = Object.keys(t.perEsito).sort((a, b) => t.perEsito[b] - t.perEsito[a]);
+    const rigaLocale = (x) => {
+      const inv = x.voci.map((v) => v.esito.inviatoIl || '').sort().pop();
+      return `<tr>
+        <td><b>${esc(x.locale || 'Senza nome')}</b>${x.indirizzo ? `<br><small>${esc(x.indirizzo)}</small>` : ''}</td>
+        <td>${esc(x.comune || 'Non indicato')}</td>
+        <td class="num"><div class="mda-voci-cella">${x.voci.map((v) => `<span>${esc(v.scheda.protocollo || v.scheda.id)}</span>`).join('')}</div></td>
+        <td><div class="mda-voci-cella">${x.voci.map((v) => `<span>${et(ESITO_MDA[v.esito.esito] || [v.esito.esito, ''])}</span>`).join('')}</div></td>
+        <td class="n"><div class="mda-voci-cella">${x.voci.map((v) => `<span>${euro(v.scheda.importo)}</span>`).join('')}</div></td>
+        <td><div class="mda-voci-cella">${x.voci.map((v) => `<small>${esc(v.esito.note || '–')}</small>`).join('')}</div></td>
+        <td class="num"><small>${dataOraIt(inv)}</small></td></tr>`;
+    };
+    const bloccoMandataria = (man) => {
+      const mt = man.registro.totali;
+      return `<div class="foglio">
+        <div class="mda-man-testa"><h2>${esc(man.nome)}</h2><small class="perche" style="margin:0">Ultimo invio ${dataOraIt(man.ultimoInvio)} · ${mt.visitati} ${mt.visitati === 1 ? 'locale visitato' : 'locali visitati'} · ${mt.ac} AC (${euro(mt.acImporto)}) · valore perso ${euro(mt.persoImporto)}</small></div>
+        ${man.registro.giorni.map((g) => {
+          const acG = g.locali.filter((x) => x.voci.some((v) => v.esito.esito === 'AC')).length;
+          return `<h3 class="mda-giorno-tit">${esc(giornoIt(g.data))} · ${g.locali.length} ${g.locali.length === 1 ? 'locale' : 'locali'}${acG ? ' · ' + acG + ' con AC' : ''}</h3>
+            <table class="reg"><tr><th>Locale</th><th>Comune</th><th>Protocollo</th><th>Esito</th><th class="n">Importo</th><th>Note</th><th>Inviato</th></tr>${g.locali.map(rigaLocale).join('')}</table>`;
+        }).join('')}
+        ${man.registro.nonVisitati.length ? `<h3 class="mda-giorno-tit">Non visitati · ${man.registro.nonVisitati.length}</h3>
+          <table class="reg"><tr><th>Locale</th><th>Comune</th><th>Protocollo</th><th>Esito</th><th class="n">Importo</th><th>Note</th><th>Inviato</th></tr>${man.registro.nonVisitati.map(rigaLocale).join('')}</table>` : ''}
+      </div>`;
+    };
+    return `<div class="occhiello">Esiti dal campo · MDA</div><h1 class="titolo">Esiti dal campo (MDA)</h1>
+      <p class="sottotitolo">Esiti inviati con un clic da IRIDE · MDA in campo, per mandataria e giorno di sopralluogo. Riepilogo su schede e locali (nessuna metrica sulle persone).</p>
+      <p class="avviso info"><b>Invio simulato (stesso browser).</b> Gli esiti arrivano dalla memoria di questo browser quando premi «Invia ad ARGO» in IRIDE · MDA. Nel sistema definitivo l'invio passerà dal server con verifica dei permessi.</p>
+      ${!tutti.length
+        ? '<div class="foglio"><p class="vuoto">Nessun esito MDA ricevuto ancora. Apri <b>IRIDE · MDA</b> (<code>#mda</code>), registra almeno un esito su una scheda e premi <b>Salva esiti → Invia ad ARGO</b>.</p></div>'
+        : !visibili.length
+          ? '<div class="foglio"><p class="vuoto">Nessun esito MDA nel tuo perimetro: gli esiti ricevuti riguardano altri District.</p></div>'
+          : `${riep.mandatarie.length > 1 ? `<div class="riga"><button class="btn ${!filtroMandMda ? '' : 'chiaro'} piccolo" data-filtro-mand="">Tutte le mandatarie (${riep.mandatarie.length})</button>${riep.mandatarie.map((m) => `<button class="btn ${filtroMandMda === m.nome ? '' : 'chiaro'} piccolo" data-filtro-mand="${esc(m.nome)}">${esc(m.nome)} (${m.schedeTotali})</button>`).join('')}</div><div class="spazio"></div>` : ''}
+            <div class="foglio"><h3>Riepilogo${filtroMandMda ? ' · ' + esc(filtroMandMda) : ''}</h3>
+              <div class="cifre mda-cifre-argo">
+                <div class="cifra"><b class="num">${t.visitati}</b><span>locali visitati · ${t.schede} ${t.schede === 1 ? 'scheda' : 'schede'}</span></div>
+                <div class="cifra calda"><b class="num">${t.ac}</b><span>AC effettivi${t.ac ? ' · ' + t.acLocali + (t.acLocali === 1 ? ' locale' : ' locali') : ''}</span></div>
+                <div class="cifra fresca"><b class="num">${euro(t.acImporto)}</b><span>valore accertato (importo SM degli AC)</span></div>
+                <div class="cifra perso"><b class="num">${euro(t.persoImporto)}</b><span>valore perso · ${t.perse ? t.perse + (t.perse === 1 ? ' chiusura definitiva' : ' chiusure definitive') : 'nessuna chiusura definitiva'}</span></div>
+                ${t.nonVisitati ? `<div class="cifra"><b class="num">${t.nonVisitati}</b><span>non visitati</span></div>` : ''}
+              </div>
+              <p class="perche">${tipi.length ? 'Esiti per scheda: ' + tipi.map((k) => esc(k) + ' ' + t.perEsito[k]).join(' · ') + ' · ' : ''}Ultimo invio ricevuto: ${dataOraIt(ultimo)}.</p>
+            </div>
+            ${mostrate.map((man) => '<div class="spazio"></div>' + bloccoMandataria(man)).join('')}`}`;
   }
 
   // ------------------------------------------------------------ LOCALI E LICENZE
@@ -5364,10 +5592,12 @@ window.avviaArgo = function () {
   // ------------------------------------------------------------ MDA
   function mda() {
     const righe = S().mda.filter((x) => { const l = DB.locale(x.locale); return l ? vede(l.district) : S().districts.some((d) => vede(d.id) && d.comuni.includes(x.comune)); });
+    const nEsitiMda = R.esitiMdaVisibili(io, S().esitiMda || [], S().districts).length;
     const stato = (x) => (x.pagata ? et(['pagata', 'salvia']) : x.atto ? et(['già accertata · atto ' + x.atto, 'salvia']) : et(['da accertare', 'mare']));
     return `<div class="occhiello">MDA · musica d'ambiente</div><h1 class="titolo">Schede MDA</h1>
       <p class="avviso info"><b>Struttura provvisoria.</b> Il proponente fornirà l'Excel che mostra la struttura delle schede MDA: questa sezione si completerà su quella base. Il caricamento è in «Locali e licenze → Caricamenti».</p>
       <p class="sottotitolo">Una scheda può essere <b>validata ma non pagata e già accertata</b>, con il numero di atto di constatazione presente nel gestionale (colonna «Accertato»): in quel caso non torna tra quelle da accertare.</p>
+      <div class="riga"><button class="btn chiaro piccolo" data-sez="esitiMda">Esiti dal campo (MDA)${nEsitiMda ? ' · ' + nEsitiMda : ''}</button></div><div class="spazio"></div>
       <div class="foglio">${righe.length ? `<table class="reg"><tr><th>Locale</th><th>Comune</th><th>Tipologia</th><th>Validata</th><th>Stato</th></tr>${righe.slice(0, 120).map((x) => `<tr><td><b>${esc(x.nome || nomeLocale(x.locale))}</b>${x.locale ? '' : ' ' + et(['da abbinare', 'ambra'])}<br><small>${esc(x.indirizzo)}</small></td><td>${esc(x.comune)}</td><td>${esc(x.tipologia || '')}</td><td>${x.validata === false ? 'no' : 'sì'}</td><td>${stato(x)}</td></tr>`).join('')}</table>` : '<p class="vuoto">Nessuna scheda MDA nel tuo perimetro.</p>'}</div>`;
   }
 
@@ -5533,7 +5763,7 @@ window.avviaArgo = function () {
       catch (e) { S().caricamenti.push({ tipo: ev.target.dataset.file, quando: DB.ora(), chi: io.id, file: file.name, esito: 'bloccato', dettaglio: e.message + '. Nulla è stato modificato.' }); salva('File non leggibile'); }
       return;
     }
-    if (ev.target.id === 'chi') { DB.personaAttiva('argo', ev.target.value); io = DB.persona(ev.target.value); selMissione = null; disegna(); avviso('Ora sei ' + io.nome); }
+    if (ev.target.id === 'chi') { DB.personaAttiva('argo', ev.target.value); io = DB.persona(ev.target.value); selMissione = null; filtroMandMda = ''; disegna(); avviso('Ora sei ' + io.nome); }
     if (ev.target.dataset.censimento) { const o = trova(S().opportunita, ev.target.dataset.censimento); o.censimentoAggiornato = ev.target.checked; DB.salva(); }
   });
 
@@ -5565,9 +5795,10 @@ window.avviaArgo = function () {
   // e dice quale tema è attivo; il pulsante ha un nome diverso, altrimenti ogni clic risulterebbe «dentro» il tema.
   document.addEventListener('click', (ev) => { if (ev.target.closest('[data-cambia-tema]')) { window.Tema.cambia(); disegna(); } });
   document.addEventListener('click', (ev) => {
-    const t = ev.target.closest('[data-entra],[data-sez],[data-livello],[data-comune],[data-comune-chiudi],[data-vedi-locali],[data-nuova-opp-comune],[data-missione],[data-indietro],[data-nuova-richiesta],[data-approva-ric],[data-proposta],[data-ok-squadra],[data-ok-scheda],[data-rimanda],[data-aggiorna],[data-notifiche-lette],[data-esempio],[data-debriefing],[data-annulla],[data-chiudi],[data-opp],[data-nuova-opp],[data-conferma-seg],[data-archivia-seg],[data-rivisto],[data-correggi],[data-letto],[data-locali],[data-abbina],[data-non-abbina],[data-proponi],[data-approva],[data-carica-disp],[data-conferma-settimana],[data-modifica-persona],[data-ricerca],[data-ripristina]');
+    const t = ev.target.closest('[data-entra],[data-sez],[data-livello],[data-comune],[data-comune-chiudi],[data-vedi-locali],[data-nuova-opp-comune],[data-missione],[data-indietro],[data-nuova-richiesta],[data-approva-ric],[data-proposta],[data-ok-squadra],[data-ok-scheda],[data-rimanda],[data-aggiorna],[data-notifiche-lette],[data-esempio],[data-debriefing],[data-annulla],[data-chiudi],[data-opp],[data-nuova-opp],[data-conferma-seg],[data-archivia-seg],[data-rivisto],[data-correggi],[data-letto],[data-locali],[data-abbina],[data-non-abbina],[data-proponi],[data-approva],[data-carica-disp],[data-conferma-settimana],[data-modifica-persona],[data-ricerca],[data-ripristina],[data-filtro-mand]');
     if (!t || t.disabled) return;
     const d = t.dataset;
+    if ('filtroMand' in d) { filtroMandMda = d.filtroMand; disegna(); return; }
     if (d.livello) { livelli[d.livello] = !livelli[d.livello]; disegna(); return; }
     if (d.comune) { if (t.classList.contains('fuori')) { avviso('Fuori dal tuo perimetro'); } comuneSel = d.comune; disegna(); return; }
     if ('comuneChiudi' in d) { comuneSel = null; disegna(); return; }
