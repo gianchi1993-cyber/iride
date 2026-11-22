@@ -1653,6 +1653,22 @@ svg.mappa{width:100%;height:auto;display:block}
   }
   function chiaviSede(schede) { var o = {}; schede.forEach(function (s) { o[s.id] = sedeDi(s); }); return o; }
 
+  /**
+   * Esiti registrati dopo l'ultimo salvataggio (DECISIONI 23, risposta 46.1): con il master di una nuova missione IRIDE
+   * riparte da zero, ma prima avvisa se ci sono esiti non ancora salvati. salvatoIl = data ISO dell'ultimo salvataggio.
+   * -> { totali: esiti con un esito, nonSalvati: quelli registrati dopo salvatoIl (tutti, se non si è mai salvato) }
+   */
+  function esitiDaSalvare(esiti, salvatoIl) {
+    var quando = salvatoIl ? Date.parse(salvatoIl) : 0, tot = 0, non = 0;
+    Object.keys(esiti || {}).forEach(function (id) {
+      var e = esiti[id];
+      if (!e || !e.esito) return;
+      tot++;
+      if (!quando || !(e.t <= quando)) non++;
+    });
+    return { totali: tot, nonSalvati: non };
+  }
+
   function registroVisite(schede, esiti) {
     var perSede = {}, elenco = [];
     schede.forEach(function (s) {
@@ -2083,7 +2099,7 @@ svg.mappa{width:100%;height:auto;display:block}
     sediDaSchede: sediDaSchede, completaGiro: completaGiro,
     leggiOrari: leggiOrari, chiusoNelGiorno: chiusoNelGiorno, statoOrario: statoOrario, giriConsigliati: giriConsigliati,
     datiDiSupporto: datiDiSupporto, domandaGemini: domandaGemini, leggiRispostaGemini: leggiRispostaGemini,
-    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, applicaComuniManuali: applicaComuniManuali, registroVisite: registroVisite, spostaDatiSede: spostaDatiSede, chiaviSede: chiaviSede, senzaNull: senzaNull, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
+    viaDi: viaDi, civicoUsabile: civicoUsabile, scomponiIndirizzo: scomponiIndirizzo, unisciCopia: unisciCopia, comuneDaNote: comuneDaNote, giriDiRecupero: giriDiRecupero, nellaZona: nellaZona, applicaLista: applicaLista, applicaComuniManuali: applicaComuniManuali, registroVisite: registroVisite, esitiDaSalvare: esitiDaSalvare, spostaDatiSede: spostaDatiSede, chiaviSede: chiaviSede, senzaNull: senzaNull, riconosciColonneSupporto: riconosciColonneSupporto, indirizzoPulito: indirizzoPulito, sedeDi: sedeDi, costruisciGiri: costruisciGiri, pesiProfiloA: pesiProfiloA, punteggiGiri: punteggiGiri,
     distanzaMetri: distanzaMetri, giroPiuVicino: giroPiuVicino, ordinaTappe: ordinaTappe, tratteMaps: tratteMaps, ESITI_MDA: ESITI_MDA,
     validaEsitoMda: validaEsitoMda, nomeFileMaster: nomeFileMaster, fileCorrispondeMandataria: fileCorrispondeMandataria,
     STATI_MISSIONE: STATI_MISSIONE, statoDopoApprovazioni: statoDopoApprovazioni, statoInIride: statoInIride,
@@ -4234,7 +4250,7 @@ window.avviaMda = function () {
         ' · pagate: ' + pag + ' · accentrate: ' + acc + ' · con atto: ' + atti + (lettura.conflitti.length ? ' · ATTENZIONE: ' + lettura.conflitti.length + ' protocolli con righe diverse' : '') +
         (gia ? ' · esiti già registrati che restano: ' + gia : '') + '.';
       var corrisponde = R.fileCorrispondeMandataria(file.name, m.nome);
-      DB.chiedi({ titolo: 'Caricare il master in «' + m.nome + '»?', testo: (corrisponde ? '' : 'Il nome del file non è quello atteso («' + R.nomeFileMaster(m.nome) + '»): controlla di essere nella mandataria giusta. ') + testo, conferma: 'Carica' }, function () {
+      DB.chiedi({ titolo: 'Caricare il master in «' + m.nome + '»?', testo: (corrisponde ? '' : 'Il nome del file non è quello atteso («' + R.nomeFileMaster(m.nome) + '»): controlla di essere nella mandataria giusta. ') + testo, conferma: 'Carica' }, function () { nuovaMissione(m, function () {
         m.schede = lettura.schede;
         // coordinate già presenti nel file (calcolate prima): valgono come posizione del locale, salvo un ingresso segnato col GPS
         // il comune scritto a mano sul campo vale anche per le versioni successive del master
@@ -4248,8 +4264,32 @@ window.avviaMda = function () {
         if (!m.N) m.N = ammesse.length;             // schede aperte all'avvio della campagna: base della progressione
         salva(); tab = 'itin'; giroSel = null; render();
         toast('Master caricato: ' + ammesse.length + ' schede negli itinerari');
-      });
+      }); });
     }).catch(function (err) { toast(err.message || 'File non leggibile'); });
+  }
+  /**
+   * Nuova missione (DECISIONI 23, risposta 46.1): IRIDE serve alla missione sul campo e gli esiti vanno in ARGO, quindi
+   * con un master nuovo si riparte da zero. Se ci sono esiti non salvati, IRIDE si ferma: «Salva ora» o «Cancella comunque».
+   * Si tolgono solo gli esiti; le informazioni sui locali (segnalazioni, orari, posizioni, comuni scritti a mano) restano.
+   */
+  function nuovaMissione(m, poi) {
+    var d = R.esitiDaSalvare(m.esiti, m.salvatoIl);
+    if (!d.totali) { poi(); return; }
+    var azzera = function () { m.esiti = {}; m.N = 0; m.salvatoIl = null; poi(); };
+    var o = document.createElement('div'); o.className = 'ovl';
+    o.innerHTML = '<div class="sheet"><div class="shead"><b>' + (d.nonSalvati ? 'Ci sono ' + d.nonSalvati + (d.nonSalvati === 1 ? ' esito non salvato' : ' esiti non salvati') : 'Nuova missione') + '</b>' +
+      '<button type="button" class="x" data-close aria-label="Chiudi">' + ic('chiudi') + '</button></div>' +
+      '<p class="sub">Con un master nuovo IRIDE riparte da zero: gli esiti della missione precedente (' + d.totali + ') vengono tolti da questo telefono. ' +
+      (d.nonSalvati ? 'Salvali prima, altrimenti si perdono.' : 'Sono già stati salvati.') + ' Segnalazioni, orari, posizioni e comuni scritti a mano restano.</p>' +
+      (d.nonSalvati ? '<button class="save" data-salva-ora>Salva ora</button><button class="az" data-cancella>Cancella comunque e carica</button>'
+        : '<button class="save" data-cancella>Inizia la nuova missione</button>') +
+      '<button class="az" data-close>Annulla</button></div>';
+    document.body.appendChild(o);
+    o.addEventListener('click', function (ev) {
+      if (ev.target === o || ev.target.closest('[data-close]')) { o.remove(); toast('Master non caricato'); return; }
+      if (ev.target.closest('[data-salva-ora]')) { o.remove(); fineMissione(); toast('Salva gli esiti, poi carica di nuovo il master'); return; }
+      if (ev.target.closest('[data-cancella]')) { o.remove(); azzera(); }
+    });
   }
 
   // ------------------------------------------------------------ posizioni: OpenStreetMap (facoltativo) e GPS
@@ -4431,8 +4471,9 @@ window.avviaMda = function () {
   // ------------------------------------------------------------ fine missione: esiti salvati fuori dal browser
   /**
    * Due file: l'Excel completo (si legge e si condivide) e la copia di sicurezza (.txt) che IRIDE sa ricaricare
-   * se la memoria del browser viene cancellata. Il Drive si raggiunge con la condivisione di Android, senza alcuna
-   * configurazione: nella finestra del Drive si sceglie la cartella ARGO › mandataria.
+   * se la memoria del browser viene cancellata. Si salvano in Download («Salva sul telefono») oppure, sul sito
+   * configurato, direttamente nella cartella ARGO › mandataria del Drive (drive.js, salvaEsiti; scelta 28.1, DECISIONI 21):
+   * la condivisione di Android non si usa più perché Chrome non condivide i file .xlsx.
    */
   function copiaDiSicurezza(m) {
     var testo = JSON.stringify({ tipo: 'IRIDE-MDA copia di sicurezza', versione: 1, creata: new Date().toISOString(), mandataria: m });
