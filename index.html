@@ -2429,6 +2429,167 @@ svg.mappa{width:100%;height:auto;display:block}
   if (typeof module !== 'undefined' && module.exports) module.exports = radice.LettoreFile;
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
+<script>/* drive.js */
+/*
+ * IRIDE · scelta del master dalla cartella ARGO del Google Drive (decisione del proponente, 21/11/2026; ADR 005).
+ *
+ * Come: Google Identity Services (token con il permesso «drive.file», il più ristretto: l'app vede solo i file
+ * che l'utente sceglie) + Google Picker (la finestra di scelta di Google). La prima volta si sceglie la cartella
+ * ARGO, poi la finestra si apre dentro quella cartella (una sottocartella per mandataria). Il file scelto passa
+ * da Google direttamente a questo browser e segue lo stesso caricamento del pulsante «Carica master».
+ *
+ * Salvataggio degli esiti (decisione del proponente, 22/11/2026, risposta 28.1): l'Excel completo e la copia di
+ * sicurezza si scrivono nella cartella della mandataria (ARGO › nome), scelta una volta con la finestra di Google.
+ * Se nella cartella c'è già un file con lo stesso nome creato da IRIDE (stesso giorno), lo si aggiorna invece di duplicarlo.
+ *
+ * Funziona solo sulla pagina pubblicata in https con la configurazione (window.IRIDE_CONFIG: googleClientId,
+ * googleApiKey, googleAppId = numero del progetto Google, necessario perché la cartella scelta diventi accessibile
+ * con il permesso «drive.file»), che lo strumento di pubblicazione inserisce. Nell'artefatto di claude.ai e nel file aperto dal
+ * telefono resta il caricamento da file. Gli script di Google si caricano solo quando si preme il pulsante.
+ */
+(function (radice) {
+  'use strict';
+  var CHIAVE_CARTELLA = 'iride-drive-cartella';
+  var XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  var MIME = [XLSX, 'application/vnd.ms-excel', 'application/vnd.google-apps.spreadsheet', 'text/csv', 'application/vnd.google-apps.folder'];
+  var token = null;
+
+  function cfg() { return radice.IRIDE_CONFIG || {}; }
+  /** Perché qui il Drive non funziona (vuoto = funziona). */
+  function motivo() {
+    if (radice.claude && radice.claude.use) return 'Nella pagina di claude.ai il Drive non è raggiungibile: usa «Carica master», oppure apri IRIDE dal sito pubblicato.';
+    if (location.protocol !== 'https:') return 'Il Drive funziona solo da IRIDE pubblicata sul sito (https). Qui usa «Carica master»: dalla finestra di scelta puoi comunque aprire il Drive del telefono.';
+    if (!cfg().googleClientId || !cfg().googleApiKey) return 'Collegamento al Drive non ancora configurato su questo sito.';
+    return '';
+  }
+  function carica(src) {
+    return new Promise(function (ok, ko) {
+      if (document.querySelector('script[data-google="' + src + '"]')) { ok(); return; }
+      var s = document.createElement('script');
+      s.src = src; s.async = true; s.setAttribute('data-google', src);
+      s.onload = function () { ok(); };
+      s.onerror = function () { ko(new Error('Google non raggiungibile: controlla la connessione')); };
+      document.head.appendChild(s);
+    });
+  }
+  function chiediToken(forza) {
+    return new Promise(function (ok, ko) {
+      var client = radice.google.accounts.oauth2.initTokenClient({
+        client_id: cfg().googleClientId,
+        scope: 'https://www.googleapis.com/auth/drive.file',
+        callback: function (r) { if (r.error) ko(new Error('Accesso a Google non concesso')); else { token = r.access_token; ok(token); } },
+        error_callback: function () { ko(new Error('Finestra di accesso a Google chiusa')); }
+      });
+      client.requestAccessToken({ prompt: forza ? 'consent' : '' });
+    });
+  }
+  function prepara() {
+    return carica('https://accounts.google.com/gsi/client')
+      .then(function () { return carica('https://apis.google.com/js/api.js'); })
+      .then(function () { return new Promise(function (ok) { radice.gapi.load('picker', ok); }); })
+      .then(function () { return token || chiediToken(false); });
+  }
+  function apri(opz) {
+    var P = radice.google.picker;
+    return new Promise(function (ok) {
+      var vista;
+      if (opz.cartelle) {
+        vista = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes('application/vnd.google-apps.folder');
+      } else {
+        vista = new P.DocsView(P.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(false).setMimeTypes(MIME.join(','));
+        if (opz.cartella) vista.setParent(opz.cartella);
+      }
+      if (opz.cartelle && opz.cartella) vista.setParent(opz.cartella);
+      var b = new P.PickerBuilder().addView(vista).setOAuthToken(token).setDeveloperKey(cfg().googleApiKey).setLocale('it').setTitle(opz.titolo);
+      if (cfg().googleAppId) b.setAppId(String(cfg().googleAppId));   // concede a IRIDE la cartella o il file scelti
+      b
+        .setCallback(function (d) {
+          if (d.action === P.Action.PICKED) ok(d.docs[0]);
+          else if (d.action === P.Action.CANCEL) ok(null);
+        }).build().setVisible(true);
+    });
+  }
+  function scarica(doc) {
+    var foglioGoogle = doc.mimeType === 'application/vnd.google-apps.spreadsheet';
+    var url = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(doc.id) + (foglioGoogle ? '/export?mimeType=' + encodeURIComponent(XLSX) : '?alt=media');
+    return fetch(url, { headers: { Authorization: 'Bearer ' + token } }).then(function (r) {
+      if (r.status === 401) { token = null; throw new Error('Accesso a Google scaduto: riprova'); }
+      if (!r.ok) throw new Error('Il Drive ha risposto ' + r.status);
+      return r.blob();
+    }).then(function (b) { return new File([b], foglioGoogle ? doc.name + '.xlsx' : doc.name); });
+  }
+  /** Fa scegliere un master dalla cartella ARGO; restituisce un File (o null se si annulla). */
+  function scegliFile() {
+    var m = motivo();
+    if (m) return Promise.reject(new Error(m));
+    return prepara().then(function () {
+      var cartella = null; try { cartella = localStorage.getItem(CHIAVE_CARTELLA); } catch (e) { /* */ }
+      if (cartella) return cartella;
+      return apri({ cartelle: true, titolo: 'Scegli la cartella ARGO (una sola volta)' }).then(function (c) {
+        if (!c) return null;
+        try { localStorage.setItem(CHIAVE_CARTELLA, c.id); } catch (e) { /* senza memoria la richiederà ogni volta */ }
+        return c.id;
+      });
+    }).then(function (cartella) {
+      if (!cartella) return null;
+      return apri({ cartella: cartella, titolo: 'Scegli il master (sottocartella della mandataria)' });
+    }).then(function (doc) { return doc ? scarica(doc) : null; });
+  }
+  function chiamata(url, opz) {
+    opz = opz || {}; opz.headers = Object.assign({ Authorization: 'Bearer ' + token }, opz.headers || {});
+    return fetch(url, opz).then(function (r) {
+      if (r.status === 401) { token = null; throw new Error('Accesso a Google scaduto: riprova'); }
+      if (!r.ok) throw new Error('Il Drive ha risposto ' + r.status);
+      return r.json();
+    });
+  }
+  /** Scrive un file nella cartella: aggiorna quello con lo stesso nome già creato da IRIDE, altrimenti lo crea. */
+  function scrivi(cartella, file) {
+    var q = "name='" + file.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "' and '" + cartella + "' in parents and trashed=false";
+    return chiamata('https://www.googleapis.com/drive/v3/files?fields=files(id)&q=' + encodeURIComponent(q)).then(function (r) {
+      var esiste = (r.files || [])[0];
+      if (esiste) return chiamata('https://www.googleapis.com/upload/drive/v3/files/' + encodeURIComponent(esiste.id) + '?uploadType=media&fields=id,name',
+        { method: 'PATCH', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+      var corpo = new FormData();
+      corpo.append('metadata', new Blob([JSON.stringify({ name: file.name, parents: [cartella] })], { type: 'application/json' }));
+      corpo.append('file', file);
+      return chiamata('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name', { method: 'POST', body: corpo });
+    });
+  }
+  /**
+   * Salva i file nella cartella della mandataria. La prima volta (per mandataria) fa scegliere la cartella ARGO › nome;
+   * poi la ricorda su questo telefono. -> Promise({ cartella: nome della cartella, file: [nomi] }) o null se si annulla.
+   */
+  function salvaEsiti(nomeMandataria, files) {
+    var m = motivo();
+    if (m) return Promise.reject(new Error(m));
+    var chiave = CHIAVE_CARTELLA + '-mand-' + nomeMandataria, salvata = null;
+    try { salvata = JSON.parse(localStorage.getItem(chiave) || 'null'); } catch (e) { /* */ }
+    return prepara().then(function () {
+      if (salvata) return salvata;
+      var argo = null; try { argo = localStorage.getItem(CHIAVE_CARTELLA); } catch (e) { /* */ }
+      return apri({ cartelle: true, cartella: argo, titolo: 'Dove salvo gli esiti? Scegli ARGO › ' + nomeMandataria }).then(function (c) {
+        if (!c) return null;
+        var x = { id: c.id, nome: c.name };
+        try { localStorage.setItem(chiave, JSON.stringify(x)); } catch (e) { /* la chiederà di nuovo */ }
+        return x;
+      });
+    }).then(function (c) {
+      if (!c) return null;
+      return files.reduce(function (p, f) { return p.then(function (fatti) { return scrivi(c.id, f).then(function () { return fatti.concat(f.name); }); }); }, Promise.resolve([]))
+        .then(function (nomi) { return { cartella: c.nome, file: nomi }; }, function (e) {
+          if (/404|403/.test(e.message)) { try { localStorage.removeItem(chiave); } catch (x) { /* */ } throw new Error('La cartella del Drive non è più raggiungibile: riprova e sceglila di nuovo'); }
+          throw e;
+        });
+    });
+  }
+  function cambiaCartella(nomeMandataria) {
+    try { localStorage.removeItem(CHIAVE_CARTELLA); if (nomeMandataria) localStorage.removeItem(CHIAVE_CARTELLA + '-mand-' + nomeMandataria); } catch (e) { /* */ }
+  }
+
+  radice.DriveIride = { motivo: motivo, scegliFile: scegliFile, salvaEsiti: salvaEsiti, cambiaCartella: cambiaCartella };
+})(window);
+</script>
 <script>/* iride.js */
 /*
  * IRIDE – app di accertamento (demo)
@@ -3556,7 +3717,7 @@ window.avviaMda = function () {
     var h = '<div class="mda-barra"><div class="mda-righe">' +
       (S.mandatarie.length ? '<select id="sel-mand" aria-label="Mandataria">' + S.mandatarie.map(function (x) { return '<option value="' + x.id + '"' + (m && x.id === m.id ? ' selected' : '') + '>' + esc(x.nome) + '</option>'; }).join('') + '</select>' : '') +
       '<button class="az piccolo" id="agg-mand" aria-label="Aggiungi mandataria">' + ic('piu') + (S.mandatarie.length ? '' : 'Aggiungi mandataria') + '</button>' +
-      (m ? '<button class="az piccolo" id="carica-master">' + ic('scarica') + 'Carica master</button><button class="az piccolo" id="carica-supporto" aria-label="Carica un documento di supporto">Supporto</button><button class="az piccolo forte" id="fine-missione">Salva esiti</button>' : '') + '</div>';
+      (m ? '<button class="az piccolo" id="carica-master">' + ic('scarica') + 'Carica master</button><button class="az piccolo" id="carica-supporto" aria-label="Carica un documento di supporto">Supporto</button><button class="az piccolo forte" id="fine-missione">Salva esiti</button><button class="az piccolo" id="dal-drive" aria-label="Carica master dal Drive">Drive</button>' : '') + '</div>';
     if (m) {
       var mancanti = m.schede.length ? sediSenzaPosizione(m).length : 0;
       h += '<p class="mda-info">' + (m.master ? esc(m.master.file) + ' · ' + esc(m.master.caricatoIl) + ' · ' + m.master.schede + ' schede' : 'File atteso: ' + esc(R.nomeFileMaster(m.nome)) + '.xls o .xlsx') +
@@ -4269,8 +4430,8 @@ window.avviaMda = function () {
   // ------------------------------------------------------------ fine missione: esiti salvati fuori dal browser
   /**
    * Due file: l'Excel completo (si legge e si condivide) e la copia di sicurezza (.txt) che IRIDE sa ricaricare
-   * se la memoria del browser viene cancellata. Niente Drive nel prototipo (scelta 30.1, 22/11/2026): i file vanno sul
-   * telefono; nel sistema definitivo gli esiti andranno nella cartella SharePoint dell'Area (proposta per l'IT, scelta 31.1).
+   * se la memoria del browser viene cancellata. Il Drive si raggiunge con la condivisione di Android, senza alcuna
+   * configurazione: nella finestra del Drive si sceglie la cartella ARGO › mandataria.
    */
   function copiaDiSicurezza(m) {
     var testo = JSON.stringify({ tipo: 'IRIDE-MDA copia di sicurezza', versione: 1, creata: new Date().toISOString(), mandataria: m });
@@ -4283,7 +4444,11 @@ window.avviaMda = function () {
     o.innerHTML = '<div class="sheet"><div class="shead"><b>Fine missione · ' + esc(m.nome) + '</b><button type="button" class="x" data-close aria-label="Chiudi">' + ic('chiudi') + '</button></div>' +
       '<p class="sub">Esiti registrati oggi: <b>' + diOggi.length + '</b> · in tutto: <b>' + conEsito.length + '</b>. Salvali fuori dal browser <b>prima</b> di cancellare schede o cronologia: ' +
       'la memoria del browser è l\'unico posto dove stanno.</p>' +
-      '<button class="save" data-telefono>Salva sul telefono (Download)</button>' +
+      '<button class="save" data-drive>Salva su Google Drive</button>' +
+      '<p class="sub">IRIDE scrive l\'Excel completo e la copia di sicurezza nella cartella <b>ARGO › ' + esc(m.nome) + '</b>: la prima volta la scegli tu, poi la ricorda. ' +
+      'Salvando di nuovo nello stesso giorno, i file si aggiornano.' + (window.DriveIride && window.DriveIride.motivo() ? ' <i>' + esc(window.DriveIride.motivo()) + '</i>' : '') +
+      ' <button type="button" class="link" data-cambia-cartella>Cambia cartella</button></p>' +
+      '<button class="az" data-telefono>Salva sul telefono (Download)</button>' +
       '<p class="sub">Salvo due file: l\'<b>Excel completo</b> con esiti e note, e la <b>copia di sicurezza</b> che IRIDE sa ricaricare.</p>' +
       '<button class="az" data-riprendi>Riprendi da una copia di sicurezza</button>' +
       '<p class="sub">Se il telefono è stato svuotato, o per passare il lavoro a un altro telefono: scegli il file «IRIDE copia…». Gli esiti già presenti non vengono toccati.</p></div>';
@@ -4293,6 +4458,18 @@ window.avviaMda = function () {
     o.addEventListener('click', function (ev) {
       if (ev.target === o || ev.target.closest('[data-close]')) { o.remove(); return; }
       if (ev.target.closest('[data-telefono]')) { scarica(file()); m.salvatoIl = new Date().toISOString(); salva(); toast('File salvati in Download'); return; }
+      if (ev.target.closest('[data-cambia-cartella]')) { if (window.DriveIride) window.DriveIride.cambiaCartella(m.nome); toast('Al prossimo salvataggio scegli di nuovo la cartella'); return; }
+      if (ev.target.closest('[data-drive]')) {
+        // scelta 28.1: scrittura diretta nella cartella del Drive (la condivisione di Android non accetta i file Excel)
+        if (!window.DriveIride || window.DriveIride.motivo()) { toast((window.DriveIride && window.DriveIride.motivo()) || 'Drive non disponibile'); return; }
+        toast('Salvo sul Drive…');
+        window.DriveIride.salvaEsiti(m.nome, file()).then(function (r) {
+          if (!r) { toast('Salvataggio annullato'); return; }
+          m.salvatoIl = new Date().toISOString(); m.salvatoSuDrive = r.cartella; salva(); o.remove();
+          toast('Salvati nel Drive, cartella ' + r.cartella + ': ' + r.file.length + ' file');
+        }, function (e) { toast(e.message + ' · puoi usare «Salva sul telefono»'); });
+        return;
+      }
       if (ev.target.closest('[data-riprendi]')) {
         var inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.txt,.json,text/plain,application/json';
         inp.addEventListener('change', function () { if (inp.files[0]) { o.remove(); riprendiCopia(inp.files[0]); } }); inp.click();
@@ -4337,6 +4514,11 @@ window.avviaMda = function () {
     }
     if (b.dataset.gemini) { var mm = M(), c3 = calcola(mm), sede = null; c3.giri.forEach(function (g) { g.sedi.forEach(function (x) { if (x.key === b.dataset.gemini) sede = x; }); }); if (sede) apriGemini([sede]); return; }
     if (b.id === 'gemini-giro') { if (perGemini.length) apriGemini(perGemini); return; }
+    if (b.id === 'dal-drive') {
+      if (!window.DriveIride) { toast('Drive non disponibile'); return; }
+      window.DriveIride.scegliFile().then(function (f) { if (f) caricaMaster(f); }, function (e) { toast(e.message); });
+      return;
+    }
     if (!m) return;
     if (b.dataset.tab) { tab = b.dataset.tab; cerca = ''; render(); window.scrollTo(0, 0); return; }
     if (b.id === 'cerca-via') { cerca = ''; schedaAperta = null; render(); return; }
