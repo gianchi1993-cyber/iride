@@ -3997,8 +3997,8 @@ window.avviaMda = function () {
       (/chius[oa] (definitivamente|temporaneamente)/i.test(s0.statoGoogle || '') || sg.riaperto ? '<label class="spunta"><input type="checkbox" data-riaperto="' + esc(x.key) + '"' + (sg.riaperto ? ' checked' : '') + '> Riaperto: verificato sul posto (Google dice «' + esc(s0.statoGoogle || 'chiuso') + '»)</label>' : '') +
       '<label class="spunta"><input type="checkbox" data-includi="' + esc(x.key) + '"' + (sg.includi === data ? ' checked' : '') + '> Verifica sul posto oggi anche se segnalato chiuso</label>' +
       (fonteOrari(m, x).fonte ? '<p class="sub">Orari: ' + esc(fonteOrari(m, x).fonte) + '</p>' : '') +
-      '<button class="az" data-gemini="' + esc(x.key) + '">Chiedi a Gemini orari e chiusura</button></div></details>' +
-      '<div class="mda-nav"><a class="az" target="_blank" rel="noopener" href="' + esc(naviga) + '">' + ic('naviga') + (p ? 'Naviga alle coordinate' : 'Naviga per indirizzo') + '</a>' +
+      '</div></details>' +
+      '<div class="mda-nav"><button class="az" data-gemini="' + esc(x.key) + '">Chiedi a Gemini</button><a class="az" target="_blank" rel="noopener" href="' + esc(naviga) + '">' + ic('naviga') + (p ? 'Naviga alle coordinate' : 'Naviga per indirizzo') + '</a>' +
       '<button class="link" data-ingresso="' + esc(x.key) + '">Segna ingresso con GPS</button>' +
       '<a class="link" target="_blank" rel="noopener" href="' + esc(cercaOrari(x)) + '">Cerca orari sul web</a></div>' +
       '<p class="sub">' + (m.pin[x.key] ? 'Ingresso segnato con GPS (±' + Math.round(m.pin[x.key].acc || 0) + ' m)' : m.geo[x.key] ? (m.geo[x.key].livello === 'lista' ? 'Posizione dalla lista ufficiale' : m.geo[x.key].livello === 'file' ? 'Posizione dal file del master' : 'Posizione da OpenStreetMap · ' + (m.geo[x.key].livello === 'via' ? 'riferimento della sola via' : 'civico')) : 'Indirizzo del master · controlla il punto in Maps') + '</p>' +
@@ -4554,7 +4554,8 @@ window.avviaMda = function () {
       var ins = document.createElement('input'); ins.type = 'file'; ins.accept = '.xls,.xlsx,.csv';
       ins.addEventListener('change', function () { if (ins.files[0]) caricaSupporto(ins.files[0]); }); ins.click(); return;
     }
-    if (b.dataset.gemini) { var mm = M(), c3 = calcola(mm), sede = null; c3.giri.forEach(function (g) { g.sedi.forEach(function (x) { if (x.key === b.dataset.gemini) sede = x; }); }); if (sede) apriGemini([sede]); return; }
+    // anche per un locale aperto dalla ricerca e fuori dai giri (richiesta del proponente, 22/11/2026)
+    if (b.dataset.gemini) { var mm = M(), trovata = sedeCercata(mm, calcola(mm), b.dataset.gemini); if (trovata) apriGemini([trovata.sede]); else toast('Locale non trovato'); return; }
     if (b.id === 'gemini-giro') { if (perGemini.length) apriGemini(perGemini); return; }
     if (b.id === 'dal-drive') {
       if (!window.DriveIride) { toast('Drive non disponibile'); return; }
