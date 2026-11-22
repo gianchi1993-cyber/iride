@@ -417,7 +417,7 @@ button.mda-trovata{width:100%;text-align:left;font:inherit;color:inherit;cursor:
 .mda-trovata{display:grid;gap:6px;padding:12px}.mda-trovata .mda-nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 
 .mda-voci.mda-mio{max-height:none;overflow:visible}.mda-passo{margin:10px 0 2px;font-weight:700;font-size:14px;color:var(--chiaro)}.mda-passo small{font-weight:400;color:var(--spento)}.mda-mio .spunta span{line-height:1.3}.mda-mio-azioni{position:sticky;bottom:0;display:flex;flex-wrap:wrap;gap:8px;padding:10px 0 4px;background:var(--pannello-pieno,var(--notte2))}
-.mda-riepilogo{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:10px 0}.mda-riepilogo div{border:1px solid var(--bordo);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column}.mda-riepilogo b{font-size:24px;line-height:1.1}.mda-riepilogo span{font-size:12px;color:var(--tenue)}.mda-riepilogo .ac{border-color:var(--rosso);background:var(--rosso-velo)}.mda-riepilogo .ac b{color:var(--rosso)}.mda-ac{color:var(--rosso);font-weight:600}
+.mda-riepilogo{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:10px 0}.mda-riepilogo div{border:1px solid var(--bordo);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column}.mda-riepilogo b{font-size:24px;line-height:1.1}.mda-riepilogo span{font-size:12px;color:var(--tenue)}.mda-riepilogo .ac{border-color:var(--rosso);background:var(--rosso-velo)}.mda-riepilogo .ac b{color:var(--rosso)}.mda-ac{color:var(--rosso);font-weight:600}.mda-riepilogo .perso b{font-size:20px}.mda-riepilogo .perso{border-style:dashed}
 </style>
 <style id="css-argo" media="not all">
 /* ARGO – sala operativa notturna (demo).
@@ -1623,7 +1623,8 @@ svg.mappa{width:100%;height:auto;display:block}
    * raggruppate per giorno di visita (il più recente in alto); «Locale non visitato» va in un elenco a parte.
    * Un locale è visitato se almeno una sua scheda ha un esito diverso da «Locale non visitato».
    * esiti = { id scheda: { esito, data, note } }.
-   * -> { giorni: [{ data, locali }], nonVisitati: [locali], totali: { visitati, nonVisitati, schede, ac, acLocali, acImporto, perEsito } }
+   * Valore perso = importo delle schede con «Locale chiuso D» (solo le chiusure definitive).
+ * -> { giorni: [{ data, locali }], nonVisitati: [locali], totali: { visitati, nonVisitati, schede, ac, acLocali, acImporto, perse, persiLocali, persoImporto, perEsito } }
    */
   /**
    * Il locale è riconosciuto da comune + nome + indirizzo (sedeDi). Quando cambia il comune (scritto a mano, lista ufficiale)
@@ -1659,7 +1660,7 @@ svg.mappa{width:100%;height:auto;display:block}
       if (!perSede[k]) { perSede[k] = { key: k, locale: s.locale, comune: s.comune, indirizzo: s.indirizzo, voci: [], data: '' }; elenco.push(perSede[k]); }
       perSede[k].voci.push({ scheda: s, esito: e });
     });
-    var giorni = {}, nonVisitati = [], tot = { visitati: 0, nonVisitati: 0, schede: 0, ac: 0, acLocali: 0, acImporto: 0, perEsito: {} };
+    var giorni = {}, nonVisitati = [], tot = { visitati: 0, nonVisitati: 0, schede: 0, ac: 0, acLocali: 0, acImporto: 0, perse: 0, persiLocali: 0, persoImporto: 0, perEsito: {} };
     elenco.forEach(function (x) {
       var fatte = x.voci.filter(function (v) { return v.esito.esito !== 'Locale non visitato'; });
       x.voci.forEach(function (v) { tot.perEsito[v.esito.esito] = (tot.perEsito[v.esito.esito] || 0) + 1; });
@@ -1667,6 +1668,9 @@ svg.mappa{width:100%;height:auto;display:block}
       tot.visitati++; tot.schede += fatte.length;
       var ac = fatte.filter(function (v) { return v.esito.esito === 'AC'; });
       if (ac.length) { tot.acLocali++; tot.ac += ac.length; ac.forEach(function (v) { tot.acImporto += v.scheda.importo || 0; }); }
+      // valore perso: solo le chiusure definitive (decisione del proponente, 22/11/2026)
+      var chiuse = fatte.filter(function (v) { return v.esito.esito === 'Locale chiuso D'; });
+      if (chiuse.length) { tot.persiLocali++; tot.perse += chiuse.length; chiuse.forEach(function (v) { tot.persoImporto += v.scheda.importo || 0; }); }
       x.data = fatte.map(function (v) { return v.esito.data || ''; }).sort().pop();
       (giorni[x.data] = giorni[x.data] || []).push(x);
     });
@@ -3932,6 +3936,7 @@ window.avviaMda = function () {
     var h = '<section class="foglio"><h1>Registro controlli</h1>' +
       '<div class="mda-riepilogo"><div><b>' + t.visitati + '</b><span>locali visitati</span></div>' +
       '<div class="ac"><b>' + t.ac + '</b><span>AC effettivi' + (t.ac ? ' · ' + t.acLocali + (t.acLocali === 1 ? ' locale' : ' locali') + ' · ' + euro(t.acImporto) : '') + '</span></div>' +
+      '<div class="perso"><b>' + euro(t.persoImporto) + '</b><span>valore perso · ' + (t.perse ? t.perse + (t.perse === 1 ? ' chiusura definitiva' : ' chiusure definitive') : 'nessuna chiusura definitiva') + '</span></div>' +
       '<div><b>' + t.schede + '</b><span>schede con esito</span></div>' +
       (t.nonVisitati ? '<div><b>' + t.nonVisitati + '</b><span>non visitati</span></div>' : '') + '</div>' +
       (esiti.length ? '<p class="sub">Esiti per scheda: ' + esiti.map(function (k) { return esc(k) + ' ' + t.perEsito[k]; }).join(' · ') + '</p>' : '<p class="sub">Nessun controllo registrato su questo telefono.</p>') +
